@@ -143,7 +143,7 @@ Each indicator was modeled using Random Forest based on 79 process variables [@p
 
 
 $$
-\min \left( \hat{f}_1(x), \hat{f}_2(x), \dots, \hat{f}_k(x) \right)
+\min \hat{f}(x)
 $$
 
 $$
