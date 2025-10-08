@@ -359,3 +359,5 @@ knitr::kable(table_indus,
 
 ```
 
+# Funding sources
+This project was supported by Fondation Institut Agro
