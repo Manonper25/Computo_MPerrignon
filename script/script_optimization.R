@@ -1706,16 +1706,16 @@ ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_real[1:1000])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = results_real_case$gen[498]-17, xend = results_real_case$gen[498]-17, y = min(hv_values)+6, yend = max(hv_values), colour = "darkorchid", size=1.5, alpha=0.6) + # Don't forget to remove iterations without solutions
-  annotate("segment", x = results_real_case$gen[499]-17, xend = results_real_case$gen[499]-17, y = min(hv_values)+6, yend = max(hv_values), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = results_real_case$gen[497]-17, xend = results_real_case$gen[497]-17, y = min(hv_values)+6, yend = max(hv_values), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = results_real_case$gen[500]-17, xend = results_real_case$gen[500]-17, y = min(hv_values)+6, yend = max(hv_values), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = results_real_case$gen[496]-17, xend = results_real_case$gen[496]-17, y = min(hv_values)+6, yend = max(hv_values), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = results_real_case$gen[498]-17, y = min(hv_values) + 1, label = "OCD HV", size = 4, angle = 90, vjust = 0.9) +
-  annotate("text", x = results_real_case$gen[499]-17, y = min(hv_values) + 1, label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = results_real_case$gen[497]-17, y = min(hv_values) + 1, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = results_real_case$gen[500]-17, y = min(hv_values) + 1, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = results_real_case$gen[496]-17, y = min(hv_values) + 1, label = "MPF", size = 4, angle = 90, vjust = -0.1)
+  annotate("segment", x = results_real_case$gen[498]-17, xend = results_real_case$gen[498]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "darkorchid", size=1.5, alpha=0.6) + # Don't forget to remove iterations without solutions
+  annotate("segment", x = results_real_case$gen[499]-17, xend = results_real_case$gen[499]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = results_real_case$gen[497]-17, xend = results_real_case$gen[497]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = results_real_case$gen[500]-17, xend = results_real_case$gen[500]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = results_real_case$gen[496]-17, xend = results_real_case$gen[496]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = results_real_case$gen[498]-17, y = min(hv_values_real) + 1, label = "OCD HV", size = 4, angle = 90, vjust = 0.9) +
+  annotate("text", x = results_real_case$gen[499]-17, y = min(hv_values_real) + 1, label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = results_real_case$gen[497]-17, y = min(hv_values_real) + 1, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = results_real_case$gen[500]-17, y = min(hv_values_real) + 1, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = results_real_case$gen[496]-17, y = min(hv_values_real) + 1, label = "MPF", size = 4, angle = 90, vjust = -0.1)
 
 ########################################
 ############ Future Work ###############
