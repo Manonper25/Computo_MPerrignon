@@ -11,7 +11,7 @@
 <meta name="author" content="Romain Jeantet">
 <meta name="author" content="Thomas Croguennec">
 <meta name="author" content="Mathieu Emily">
-<meta name="dcterms.date" content="2025-09-23">
+<meta name="dcterms.date" content="2025-10-08">
 <meta name="keywords" content="Multi-objective optimization, Stopping criteria, Evolutionary algorithms, Evaluation metrics, Food process optimization">
 
 <title>Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application</title>
@@ -237,14 +237,14 @@ ISSN 2824-7795</p>
       <div>
       <div class="quarto-title-meta-heading">Published</div>
       <div class="quarto-title-meta-contents">
-        <p class="date">September 23, 2025</p>
+        <p class="date">October 8, 2025</p>
       </div>
     </div>
                                     
       <div>
       <div class="quarto-title-meta-heading">Modified</div>
       <div class="quarto-title-meta-contents">
-        <p class="date-modified">September 23, 2025</p>
+        <p class="date-modified">October 8, 2025</p>
       </div>
     </div>
       
@@ -428,7 +428,7 @@ Y_k(X_1, X_2) = \sum_{i=1}^{n_k} h_{k,i} \cdot \exp\left(-\frac{(X_1 - \mu_{k,i}
 <div id="fig-1" class="quarto-float quarto-figure quarto-figure-center anchored">
 <figure class="quarto-float quarto-float-fig figure">
 <div aria-describedby="fig-1-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<img src="figures/Figure1.png" style="width:70.0%;height:120.0%" class="figure-img">
+<img src="figures/Figure1.png" class="img-fluid figure-img">
 </div>
 <figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-1-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Figure&nbsp;1: Visualization of <span class="math inline">Y_1</span> and <span class="math inline">Y_2</span> as a function of <span class="math inline">X_1</span> and <span class="math inline">X_2</span> and the approximate Pareto front obtained from the functions of <span class="math inline">Y_1</span> and <span class="math inline">Y_2</span>. The aim is to maximize <span class="math inline">Y_1</span> and <span class="math inline">Y_2</span>.
@@ -478,7 +478,7 @@ Figure&nbsp;2: Optimization results for simulated problem for each stopping crit
 <div id="fig-3" class="quarto-float quarto-figure quarto-figure-center anchored">
 <figure class="quarto-float quarto-float-fig figure">
 <div aria-describedby="fig-3-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<img src="figures/Figure3.png" style="width:90.0%;height:110.0%" class="figure-img">
+<img src="figures/Figure3.png" class="img-fluid figure-img">
 </div>
 <figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-3-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Figure&nbsp;3: Comparison of the Pareto Fronts obtained for each stopping criterion with the simulated Pareto Front.
@@ -570,7 +570,7 @@ Figure&nbsp;8: Stopping criteria for an industrial optimization with Y = 4. The 
 <div id="fig-9" class="quarto-float quarto-figure quarto-figure-center anchored">
 <figure class="quarto-float quarto-float-fig figure">
 <div aria-describedby="fig-9-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<img src="figures/Figure9.png" style="width:80.0%;height:100.0%" class="figure-img">
+<img src="figures/Figure9.png" class="img-fluid figure-img">
 </div>
 <figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-9-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Figure&nbsp;9: Evolution of hypervolume over generations for industrial optimization for Y = 4 with the stopping generation proposed by each stopping criterion.
@@ -599,7 +599,7 @@ Figure&nbsp;9: Evolution of hypervolume over generations for industrial optimiza
 <div id="fig-10" class="quarto-float quarto-figure quarto-figure-center anchored">
 <figure class="quarto-float quarto-float-fig figure">
 <div aria-describedby="fig-10-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<img src="figures/Figure10.png" style="width:80.0%;height:100.0%" class="figure-img">
+<img src="figures/Figure10.png" class="img-fluid figure-img">
 </div>
 <figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-10-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Figure&nbsp;10: Evolution of hypervolume over generations for WFG1 problem for Y = 2 with the stopping generation proposed by each stopping criterion.
@@ -2122,7 +2122,7 @@ Wari, Ezra, and Weihang Zhu. 2016. <span>“A Survey on Metaheuristics for Optim
 <span id="cb1-126"><a href="#cb1-126" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-127"><a href="#cb1-127" aria-hidden="true" tabindex="-1"></a>The domain is discretized using a regular grid of size $50 \times 50$, forming a total of 2500 input points. This formulation produces smooth surfaces where the means, standard deviations and weights of the Gaussian functions influence the trade-offs between objectives. The theoretical Pareto front is obtained by evaluating all solutions in the objective space $(Y_1, Y_2)$ and selecting only the non-dominated points (those for which no other solution improves one objective without degrading the other). However, the evaluated grid does not capture all non-dominated points but only a subset, providing an approximation of the theoretical Pareto front. The simulated objectives $Y_1$ and $Y_2$, along with the corresponding approximate Pareto Front, are shown in @fig-1.</span>
 <span id="cb1-128"><a href="#cb1-128" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-129"><a href="#cb1-129" aria-hidden="true" tabindex="-1"></a><span class="al">![Visualization of $Y_1$ and $Y_2$ as a function of $X_1$ and $X_2$ and the approximate Pareto front obtained from the functions of $Y_1$ and $Y_2$. The aim is to maximize $Y_1$ and $Y_2$.](figures/Figure1.png)</span>{#fig-1 width=70% height=120%}</span>
+<span id="cb1-129"><a href="#cb1-129" aria-hidden="true" tabindex="-1"></a><span class="al">![Visualization of $Y_1$ and $Y_2$ as a function of $X_1$ and $X_2$ and the approximate Pareto front obtained from the functions of $Y_1$ and $Y_2$. The aim is to maximize $Y_1$ and $Y_2$.](figures/Figure1.png)</span>{#fig-1}</span>
 <span id="cb1-130"><a href="#cb1-130" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-131"><a href="#cb1-131" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-132"><a href="#cb1-132" aria-hidden="true" tabindex="-1"></a><span class="fu">## Multi-objective problem benchmarks</span></span>
@@ -2165,7 +2165,7 @@ Wari, Ezra, and Weihang Zhu. 2016. <span>“A Survey on Metaheuristics for Optim
 <span id="cb1-169"><a href="#cb1-169" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-170"><a href="#cb1-170" aria-hidden="true" tabindex="-1"></a>According to @fig-2, differences between the stopping criteria are not particularly pronounced in terms of hypervolume values. All criteria appear to successfully reach the Pareto front (@fig-3). However, variations exist in terms of the number of generations before termination. The Entropy criterion tends to stop at higher generations compared to the OCD HV or LSSC criteria. Given that the objective functions (i.e. $Y_1$ and $Y_2$ as functions of $X_1$ and $X_2$) are relatively simple, the Pareto Front stabilizes after only a few generations. This stabilization is accurately detected by all criteria.</span>
 <span id="cb1-171"><a href="#cb1-171" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-172"><a href="#cb1-172" aria-hidden="true" tabindex="-1"></a><span class="al">![Comparison of the Pareto Fronts obtained for each stopping criterion with the simulated Pareto Front.](figures/Figure3.png)</span>{#fig-3 width=90% height=110%}</span>
+<span id="cb1-172"><a href="#cb1-172" aria-hidden="true" tabindex="-1"></a><span class="al">![Comparison of the Pareto Fronts obtained for each stopping criterion with the simulated Pareto Front.](figures/Figure3.png)</span>{#fig-3}</span>
 <span id="cb1-173"><a href="#cb1-173" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-174"><a href="#cb1-174" aria-hidden="true" tabindex="-1"></a>As expected, OCD HV stops before the other criteria, resulting in lower computational cost and potentially reduced performance in terms of hypervolume values. The Pareto front obtained under OCD HV is satisfactory, although some areas of the front remain unexplored (@fig-3). On the other hand, Entropy stops much later, leading to higher-quality fronts at the expense of increased computational cost. The Entropy criterion produces results similar to those of the MGBM and MPF, but requires more generations to do so. This suggests that Entropy could potentially terminate earlier while still achieving comparable Pareto front quality. The LSSC criterion obtains similar results to OCD HV with some unexplored regions. For this simple problem, characterised by a small number of objectives and variables, all the stopping criteria identify a Pareto front close to the simulated front, with no significant differences in their ability to reach the theoretical front.</span>
 <span id="cb1-175"><a href="#cb1-175" aria-hidden="true" tabindex="-1"></a></span>
@@ -2225,7 +2225,7 @@ Wari, Ezra, and Weihang Zhu. 2016. <span>“A Survey on Metaheuristics for Optim
 <span id="cb1-229"><a href="#cb1-229" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-230"><a href="#cb1-230" aria-hidden="true" tabindex="-1"></a>To deepen the analysis, the evolution of the hypervolume over generations is illustrated in @fig-9, where the stopping generation for each criterion is indicated in color. </span>
 <span id="cb1-231"><a href="#cb1-231" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-232"><a href="#cb1-232" aria-hidden="true" tabindex="-1"></a><span class="al">![Evolution of hypervolume over generations for industrial optimization for Y = 4 with the stopping generation proposed by each stopping criterion.](figures/Figure9.png)</span>{#fig-9 width=80% height=100%}</span>
+<span id="cb1-232"><a href="#cb1-232" aria-hidden="true" tabindex="-1"></a><span class="al">![Evolution of hypervolume over generations for industrial optimization for Y = 4 with the stopping generation proposed by each stopping criterion.](figures/Figure9.png)</span>{#fig-9}</span>
 <span id="cb1-233"><a href="#cb1-233" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-234"><a href="#cb1-234" aria-hidden="true" tabindex="-1"></a>This curved evolution underlines an irregular hypervolume progression, characterized by plateaus, jumps, and slight fluctuations. Such a trajectory is reminiscent of that observed in certain problems from the WFG family, which are known for their complexity. Several factors may explain this behavior: the putative presence of local optima, discontinuities in the Pareto front, or correlations between objectives. Altogether, these elements suggest that the industrial problem under consideration is complex and difficult to optimize. In this context, MGBM stops too early, well before the Pareto front reaches a satisfactory quality. LSSC and Entropy also stop while the hypervolume is still increasing, indicating that they fail to reach an optimal front. OCD HV and MPF criteria demonstrate similar behavior, both stopping when the hypervolume starts stabilizing, indicating good Pareto front quality. Both criteria appear to effectively capture the convergence of the optimization process by terminating when the hypervolume becomes nearly stationary, reflecting a stabilization of the Pareto front.</span>
 <span id="cb1-235"><a href="#cb1-235" aria-hidden="true" tabindex="-1"></a></span>
@@ -2249,7 +2249,7 @@ Wari, Ezra, and Weihang Zhu. 2016. <span>“A Survey on Metaheuristics for Optim
 <span id="cb1-253"><a href="#cb1-253" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-254"><a href="#cb1-254" aria-hidden="true" tabindex="-1"></a>While the performance of the evaluated criteria was tested under increasing levels of problem complexity (such as objective correlation and multimodality), we did not explicitly consider another important form of complexity: a strong discontinuous nature of the Pareto front with convexe and concave shapes, as examplified by WFG1. This problem introduces a different challenge where the search process does not progress smoothly but rather by in steps or segments. WFG1 is characterized by a partially separable structure, transformation functions that create strong nonlinearities, and a discontinuous Pareto front. As a result, optimization algorithms often discover the front piece by piece, trying to uncover disconnected regions. WFG2 also exhibits a discontinuous Pareto front but in a less complex form (a single disconnected segment located at a distance from the main front). While still posing difficulties, the segmentation in WFG2 is simpler and easier to overcome for the stopping criteria compared to WFG1’s multi-fragmented structure. The tested criteria are not well-suited to capture this type of complexity as shown in @fig-10. </span>
 <span id="cb1-255"><a href="#cb1-255" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-256"><a href="#cb1-256" aria-hidden="true" tabindex="-1"></a><span class="al">![Evolution of hypervolume over generations for WFG1 problem for Y = 2 with the stopping generation proposed by each stopping criterion.](figures/Figure10.png)</span>{#fig-10 width=80% height=100%}</span>
+<span id="cb1-256"><a href="#cb1-256" aria-hidden="true" tabindex="-1"></a><span class="al">![Evolution of hypervolume over generations for WFG1 problem for Y = 2 with the stopping generation proposed by each stopping criterion.](figures/Figure10.png)</span>{#fig-10}</span>
 <span id="cb1-257"><a href="#cb1-257" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-258"><a href="#cb1-258" aria-hidden="true" tabindex="-1"></a>The evolution of the hypervolume is discontinuous and the criteria stop at intermediate pillars, resulting in a non-complete exploration of the front. All criteria inherently assume a continuous and gradual improvement of the Pareto front, reflected in the smooth evolution of evaluation metrics like hypervolume. When this assumption does not hold, as in WFG1, these criteria may fail to detect meaningful progress or stability. This highlights an opportunity for improvement in scenarios where the front evolves with strong discontinuities. Future work presents opportunities to enhance these criteria by developing innovative mechanisms for managing front fragmentation, which will strengthen their effectiveness in complex problem scenarios.</span>
 <span id="cb1-259"><a href="#cb1-259" aria-hidden="true" tabindex="-1"></a></span>
