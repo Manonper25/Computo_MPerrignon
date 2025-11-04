@@ -703,8 +703,7 @@ results_tot$Problem <- results_tot$Problem %>%  fct_recode("ZDT1" = "1",  "WFG2"
 
 results_tot$critere <- fct_relevel(results_tot$critere, c("OCD_HV", "LSSC", "MGBM","Entropy","MPF"))
 
-#write_rds(results_tot,
-          "data/benchmark/results_benchmark_problems.rds")
+#write_rds(results_tot,"data/benchmark/results_benchmark_problems.rds")
 
 ### Table for 2 objective
 table_2Y <- results_tot %>%
