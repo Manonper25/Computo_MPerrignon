@@ -1,9 +1,6 @@
 # Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application
 
 [![build and publish](https://github.com/computorg/published-202510-durand-fast/actions/workflows/build.yml/badge.svg)](https://github.com/computorg/published-202510-durand-fast/actions/workflows/build.yml)
-[![DOI:10.57750/1gr8-bk61](https://img.shields.io/badge/DOI-10.57750/efbs--ef14-034E79.svg)](https://doi.org/10.57750/efbs-ef14)
-[![reviews](https://img.shields.io/badge/review-report-blue)](https://github.com/computorg/published-202510-durand-fast/issues/15)
-[![SWH](https://archive.softwareheritage.org/badge/origin/https://github.com/computorg/published-202510-durand-fast/)](https://archive.softwareheritage.org/browse/origin/?origin_url=https://github.com/computorg/published-202412-ambroise-spectral)
 [![Creative Commons License](https://i.creativecommons.org/l/by/4.0/80x15.png)](http://creativecommons.org/licenses/by/4.0/)
 
 
