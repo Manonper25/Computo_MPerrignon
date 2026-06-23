@@ -1,5 +1,8 @@
 project:
-  title: "template-computo-R"
+  type: default
+  render:
+    - submission-202510-Perrignon-stoppingcriteria.qmd
+    - README.qmd
 
 title: "Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application"
 author:
@@ -45,6 +48,7 @@ github-user: computorg
 repo: "template-computo-r"
 draft: true # set to false once the build is running
 published: false # will be set to true once accepted
+license: CC-BY-4.0
 format:
   computo-html: default
   computo-pdf: default

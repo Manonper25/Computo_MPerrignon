@@ -4,6 +4,15 @@
 ########################## OPTIMIZATION ##################################
 
 # Load packages 
+
+install.packages("mco")
+install.packages("readr")
+install.packages("tidyverse")
+install.packages("smoof")
+install.packages("tictoc")
+install.packages("rPref")
+install.packages("ranger")
+
 library(mco)
 library(readr)
 library(tidyverse)
@@ -204,28 +213,32 @@ MGBM_crit <- function(fronts, R = 0.1, Q = 0.0001, seuil = 0.05) {
 
 ## OCD_HV 
 OCD_HV <- function(front, ref_point, varLimit = 1e-3, window = 10, threshold = 0.05) {
-  m <- ncol(front[[1]]) #nb obj
   
-  for (gen in 1:length(front)) {
+  n_gen   <- length(front)
+  m       <- ncol(front[[1]])    
+  start   <- window                    
+  
+  # check the front outside the for loop
+  valid <- vapply(front, function(f) !is.null(f) && nrow(f) > 0, logical(1))
+  
+  # pre-calculation of HV
+  HVs_all <- vapply(seq_len(n_gen), function(i) {
+    if (valid[i]) dominatedHypervolume(front[[i]], ref_point) else NA
+  }, numeric(1))
+  
+  for (gen in start:n_gen) {
     
-    if (gen >= window){
-      window_front <- front[(gen - window + 1):gen]
-      
-      if (any(sapply(window_front, function(f) is.null(f) || nrow(f) == 0))) {
-        next
-      }
-      
-      # calcul hv
-      HVs <- sapply(window_front, function(window_front) dominatedHypervolume(window_front, ref_point))
-      # test chi²
-      p_chi2 <- chi2_test(HVs, varLimit)
-      if (p_chi2 <= threshold) {
-        return(as.numeric(gen))
-      }
+    idx <- (gen - window + 1):gen
+    
+    if (!all(valid[idx])) next
+    
+    # Direct extraction from the pre-calculated HV window
+    if (chi2_test(HVs_all[idx], varLimit) <= threshold) {
+      return(as.numeric(gen))
     }
-    
   }
-  return(as.numeric(gen))
+  
+  return(as.numeric(n_gen))
 }
 
 ## LSSC 
@@ -233,38 +246,48 @@ LSSC <- function(front, ref_point, window_size = 10, slope_min = 0.002) {
   n <- length(front)
   if (n < window_size) return(FALSE)
   
-  hv_values <- c()
+  # pre-calculation (removed from the for loop)
+  time      <- seq_len(window_size)
+  mean_res  <- 1 - (2 / window_size)
+  var_res   <- (2 / window_size) - (4 / window_size^2)
+  thres     <- mean_res + 3 * sqrt(var_res)
   
-  for (i in 1:length(front)) {
-    front_i <- front[[i]]
-    if (is.null(front_i) || nrow(front_i) == 0) {
-      next
-    }
-    hv_i <- dominatedHypervolume(front_i, ref_point)
+  # pre-calcultation
+  time_mean <- mean(time)
+  time_var  <- sum((time - time_mean)^2)
+  
+  # pre-calculation of hv
+  hv_values <- vapply(front, function(f) {
+    if (is.null(f) || nrow(f) == 0) NA
+    else dominatedHypervolume(f, ref_point)
+  }, numeric(1))
+  
+  # Index des HV pour reconstituer la fenêtre
+  valid_idx <- which(!is.na(hv_values))
+  hv_valid  <- hv_values[valid_idx]
+  nv        <- length(hv_valid)
+  
+  if (nv < window_size) return(as.numeric(n))
+  
+  for (k in window_size:nv) {
+    window <- hv_valid[(k - window_size + 1):k]
     
-    hv_values <- c(hv_values, hv_i)
+    # manual linear regression (faster than lm)
+    w_mean <- mean(window)
+    b      <- sum((time - time_mean) * (window - w_mean)) / time_var
     
-    if (length(hv_values) >= window_size) {
-      window <- tail(hv_values, window_size)
-      time <- 1:window_size
-      
-      model <- lm(window~ time)
-      a <- coef(model)[1]
-      b <- coef(model)[2]
-      
+    if (abs(b) < slope_min) {          
+      a        <- w_mean - b * time_mean
       residuals <- window - (a + b * time)
-      res_norm <- sum(residuals^2) / window_size
+      res_norm  <- sum(residuals^2) / window_size
       
-      mean_res <- 1 - (2/window_size)
-      var_res <- (2 / (window_size)) - (4/window_size^2)
-      thres <- mean_res + 3 * sqrt(var_res)
-      
-      if (abs(b) < slope_min && res_norm < thres) {
-        return(as.numeric(i))
+      if (res_norm < thres) {
+        return(as.numeric(valid_idx[k]))
       }
     }
   }
-  return(as.numeric(i))
+  
+  return(as.numeric(n))
 }
 
 ## Entropy 
@@ -396,10 +419,10 @@ optim_rep <- function(probleme,var,obj,low,upp,rep){
   
   for (i in 1:rep){
     optim <- mco::nsga2(probleme, var, obj, generations = c(1:5000), popsize = 100,
-                        lower.bounds = rep(low, var), upper.bounds = rep(upp, var)) 
+                        lower.bounds = rep(low, var), upper.bounds = upp) 
     front <- extract_pareto_front(optim)
     
-    ref_point <- rep(10,obj)
+    ref_point <- rep(25,obj)
     ideal_point <- rep(0,obj)
     
     
@@ -408,7 +431,6 @@ optim_rep <- function(probleme,var,obj,low,upp,rep){
     stop_mp_crit_hv <- MP_crit_HV(front, ref_point)
     time_mp_hv <- toc()
     time_mp_crit_hv <- (time_mp_hv$toc[["elapsed"]]-time_mp_hv$tic[["elapsed"]])/stop_mp_crit_hv
-    
     time_tot_mp_crit_hv <- (time_mp_hv$toc[["elapsed"]]-time_mp_hv$tic[["elapsed"]])
     
     if (is.na(stop_mp_crit_hv)) {
@@ -420,7 +442,7 @@ optim_rep <- function(probleme,var,obj,low,upp,rep){
       hv_mp_crit_hv <- dominatedHypervolume(front[[stop_mp_crit_hv]], ref_point)
       
       spd_mp_crit_hv <- generalizedSpread(front[[stop_mp_crit_hv-1]], front[[stop_mp_crit_hv]])
-      
+
       mdr_mp_crit_hv <- mutual_dominance_rate(front[[stop_mp_crit_hv-1]], front[[stop_mp_crit_hv]])
       
       ent_mp_crit_hv <- entropy(front[[stop_mp_crit_hv-1]], front[[stop_mp_crit_hv]])
@@ -666,42 +688,81 @@ table_simu <- results_simu %>%
 ########################################
 ### Results for two-objective problems : Sect 4.2.1
 set.seed(2503)
-results_zdt1 <- optim_rep(zdt1,30,2,0,1,100)
+results_zdt1 <- optim_rep(zdt1,30,2,0,rep(1,30),100)
 
 set.seed(2503)
 wfg2_2Y <- makeWFG2Function(2,6,14)
-results_wfg2_2Y <- optim_rep(wfg2_2Y,20,2,0,1,100)
+results_wfg2_2Y <- optim_rep(wfg2_2Y,20,2,0,2*seq_len(20),100)
 
 set.seed(2503)
 wfg3_2Y <- makeWFG3Function(2,6,14)
-results_wfg3_2Y <- optim_rep(wfg3_2Y,20,2,0,1,100)
+results_wfg3_2Y <- optim_rep(wfg3_2Y,20,2,0,2*seq_len(20),100)
 
 set.seed(2503)
 wfg4_2Y <- makeWFG4Function(2,6,14)
-results_wfg4_2Y <- optim_rep(wfg4_2Y,20,2,0,1,100)
+results_wfg4_2Y <- optim_rep(wfg4_2Y,20,2,0,2*seq_len(20),100)
 
 ### Results for four-objective problems : Sect 4.2.2
 set.seed(123)
 wfg2_4Y <- makeWFG2Function(4,6,14)
-results_wfg2_4Y <- optim_rep(wfg2_4Y,20,4,0,1,100)
+results_wfg2_4Y <- optim_rep(wfg2_4Y,20,4,0,2*seq_len(20),100)
 
 set.seed(2503)
 wfg3_4Y <- makeWFG3Function(4,6,14)
-results_wfg3_4Y <- optim_rep(wfg3_4Y,20,4,0,1,100)
+results_wfg3_4Y <- optim_rep(wfg3_4Y,20,4,0,2*seq_len(20),100)
 
 set.seed(2503)
 wfg4_4Y <- makeWFG4Function(4,6,14)
-results_wfg4_4Y <- optim_rep(wfg4_4Y,20,4,0,1,100)
+results_wfg4_4Y <- optim_rep(wfg4_4Y,20,4,0,2*seq_len(20),100)
 
-results_tot <- bind_rows(results_zdt1,results_wfg2_2Y,results_wfg3_2Y,
-                         results_wfg4_2Y,results_wfg2_4Y,results_wfg3_4Y,
-                         results_wfg4_4Y,.id = "Problem")
+### Results for six-objective problems : not included
+set.seed(123)
+wfg2_6Y <- makeWFG2Function(6,10,10)
+results_wfg2_6Y <- optim_rep(wfg2_6Y,20,6,0,2*seq_len(20),100)
+
+set.seed(2503)
+wfg3_6Y <- makeWFG3Function(6,10,10)
+results_wfg3_6Y <- optim_rep(wfg3_6Y,20,6,0,2*seq_len(20),100)
+
+set.seed(2503)
+wfg4_6Y <- makeWFG4Function(6,10,10)
+results_wfg4_6Y <- optim_rep(wfg4_6Y,20,6,0,2*seq_len(20),100)
+
+### Results for eight-objective problems : Sect 4.2.3
+set.seed(123)
+wfg2_8Y <- makeWFG2Function(8,14,6)
+results_wfg2_8Y <- optim_rep(wfg2_8Y,20,8,0,2*seq_len(20),100)
+
+set.seed(2503)
+wfg3_8Y <- makeWFG3Function(8,14,6)
+results_wfg3_8Y <- optim_rep(wfg3_8Y,20,8,0,2*seq_len(20),100)
+
+set.seed(2503)
+wfg4_8Y <- makeWFG4Function(8,14,6)
+results_wfg4_8Y <- optim_rep(wfg4_8Y,20,8,0,2*seq_len(20),100)
+
+
+results_tot <- bind_rows(results_zdt1,results_wfg2_2Y,results_wfg3_2Y,results_wfg4_2Y,
+                         results_wfg2_4Y,results_wfg3_4Y,results_wfg4_4Y,
+                         results_wfg2_8Y,results_wfg3_8Y,results_wfg4_8Y,
+                         .id = "Problem")
+
 
 results_tot$Problem <- results_tot$Problem %>%  fct_recode("ZDT1" = "1",  "WFG2" = "2",
                                                            "WFG3" = "3", "WFG4" = "4","WFG2" = "5", "WFG3" = "6",
-                                                           "WFG4" = "7")
+                                                           "WFG4" = "7","WFG2" = "8", "WFG3" = "9",
+                                                           "WFG4" = "10")
+
 
 results_tot$critere <- fct_relevel(results_tot$critere, c("OCD_HV", "LSSC", "MGBM","Entropy","MPF"))
+
+results_tot <- results_tot %>%
+  mutate(
+    HV     = ifelse(gen == 5000, NA, HV),
+    Spread = ifelse(gen == 5000, NA, Spread),
+    gen    = ifelse(gen == 5000, NA, gen)
+  )
+
 
 #write_rds(results_tot,"data/benchmark/results_benchmark_problems.rds")
 
@@ -749,6 +810,29 @@ table_4Y <- results_tot %>%
   mutate(across(c(`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) 
 
 #write_rds(table_4Y, "tables/table_4Y.rds")
+
+### Table for 8 objective
+table_8Y <- results_tot %>%
+  filter(nb_obj == 8) %>%
+  group_by(Problem, critere) %>%
+  summarise(
+    "Mean HV" = mean(HV, na.rm = TRUE),
+    "Std HV" = sd(HV, na.rm = TRUE),
+    "Mean Spread" = mean(Spread, na.rm = TRUE),
+    "Std Spread" = sd(Spread, na.rm = TRUE),
+    "Mean Gen" = mean(gen, na.rm = TRUE),
+    "Std Gen" = sd(gen, na.rm = TRUE),
+    "Mean Time" = mean(time_tot, na.rm = TRUE),
+    "Std Time" = sd(time_tot, na.rm = TRUE),
+    "Mean Criterion Time" = mean(time, na.rm = TRUE),
+    "Std Criterion Time" = sd(time, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
+  mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`), ~ round(., 2))) %>% 
+  mutate(across(c(`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) 
+
+#write_rds(table_8Y, "tables/table_8Y.rds")
 
 
 ########################################
@@ -1031,9 +1115,12 @@ pareto_test <- psel(dataXY, p_test)
 # Figure 1
 plot_Y1 <- ggplot(dataXY, aes(x = X1, y = X2, z = Y1)) +
   geom_contour(colour = "dodgerblue3") +
-  labs(x = "X1", y = "X2") +
   xlim(-10,10) + ylim(-10,10) +
-  labs(title = "Y1 based on X1 and X2") +
+  labs(
+    x     = expression(X[1]),
+    y     = expression(X[2]),
+    title = expression(bold(Y[1]~"based on"~X[1]~"and"~X[2]))
+  ) +
   theme_bw() + 
   theme(
     plot.title = element_text(face = "bold", size = 16),  
@@ -1053,9 +1140,12 @@ plot_Y1 <- ggplot(dataXY, aes(x = X1, y = X2, z = Y1)) +
 
 plot_Y2 <- ggplot(dataXY, aes(x = X1, y = X2, z = Y2)) +
   geom_contour(colour = "dodgerblue3") +
-  labs(x = "X1", y = "X2") +
   xlim(-10,10) + ylim(-10,10) +
-  theme_bw() + labs(title = "Y2 based on X1 and X2") +
+  theme_bw() + labs(
+    x     = expression(X[1]),
+    y     = expression(X[2]),
+    title = expression(bold(Y[2]~"based on"~X[1]~"and"~X[2]))
+  )  +
   theme(
     plot.title = element_text(face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1071,7 +1161,10 @@ plot_Y2 <- ggplot(dataXY, aes(x = X1, y = X2, z = Y2)) +
     panel.grid.minor = element_blank()
   ) 
 ParetFront_theo <- ggplot(pareto_test) + geom_line(aes(x=Y1, y=Y2)) +
-  theme_bw() + labs(title = "Approximate Pareto Front")  +
+  theme_bw() +
+  labs(x = expression(Y[1]),
+       y = expression(Y[2]),
+       title = "Approximate Pareto Front")  +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1112,8 +1205,9 @@ results_simu_long %>%
   theme(
     plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
-    axis.title = element_text(size = 15),  
-    axis.text = element_text(size = 13),  
+    axis.title = element_text(size = 17),  
+    axis.text.x = element_text(size = 13, face = "bold", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 13),
     legend.title = element_blank(),
     legend.text = element_blank(),
     legend.position = "none",
@@ -1149,8 +1243,8 @@ MPF_plot <- ggplot() +
                  y=-front_MPF$value[front_MPF$pareto.optimal,,drop = FALSE][,2]), col = "firebrick", size = 2, alpha= .5, shape= 16) +
   labs(
     title = "",
-    x = "Y1",
-    y = "Y2"
+    x = expression(Y[1]),
+    y = expression(Y[2])
   ) + 
   theme_bw() + 
   theme(
@@ -1175,8 +1269,8 @@ MGBM_plot <- ggplot() +
                  y=-front_MGBM$value[front_MGBM$pareto.optimal, , drop = FALSE][,2]), col = "#F194B4", size = 2, alpha= .5, shape= 16) +
   labs(
     title = "",
-    x = "Y1",
-    y = "Y2"
+    x = expression(Y[1]),
+    y = expression(Y[2])
   ) + 
   theme_bw() + 
   theme(
@@ -1201,8 +1295,8 @@ LSSC_plot <- ggplot() +
                  y=-front_LSSC$value[front_LSSC$pareto.optimal, , drop = FALSE][,2]), col = "darkcyan", size = 2, alpha= .5, shape= 16) +
   labs(
     title = "",
-    x = "Y1",
-    y = "Y2"
+    x = expression(Y[1]),
+    y = expression(Y[2])
   ) + 
   theme_bw() + 
   theme(
@@ -1227,8 +1321,8 @@ entropy_plot <- ggplot() +
                  y=-front_entropy$value[front_entropy$pareto.optimal, , drop = FALSE][,2]), col = "goldenrod2", size = 2, alpha= .5, shape= 16) +
   labs(
     title = "",
-    x = "Y1",
-    y = "Y2"
+    x = expression(Y[1]),
+    y = expression(Y[2])
   ) + 
   theme_bw() + 
   theme(
@@ -1253,8 +1347,8 @@ ocd_plot <- ggplot() +
                  y=-front_ocd$value[front_ocd$pareto.optimal, , drop = FALSE][,2]), col = "darkorchid", size = 2, alpha= .5, shape= 16) +  
   labs(
     title = "",
-    x = "Y1",
-    y = "Y2"
+    x = expression(Y[1]),
+    y = expression(Y[2])
   ) + 
   theme_bw() + 
   theme(
@@ -1310,7 +1404,7 @@ pb_2Y_long %>%
     plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
     axis.title = element_text(size = 15),  
-    axis.text = element_text(size = 13),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
     legend.title = element_blank(),
     legend.text = element_blank(),
     legend.position = "none",
@@ -1323,18 +1417,18 @@ pb_2Y_long %>%
 
 ## Figure 5
 ### ZDT1
-set.seed(123)
+set.seed(2503)
 optim_zdt1 <- mco::nsga2(zdt1, 30,2, generations = c(1:5000), popsize = 100,
                          lower.bounds = rep(0, 30), upper.bounds = rep(1,30))
 pareto_fronts_zdt <- extract_pareto_front(optim_zdt1)
 
 hv_values_zdt1 <- sapply(pareto_fronts_zdt, function(pareto_fronts_zdt) dominatedHypervolume(pareto_fronts_zdt, rep(10,2)))
 
-set.seed(123)
-zdt1_plot <- optim_rep(zdt1,30,2,0,1,1)
+set.seed(2503)
+zdt1_plot <- optim_rep(zdt1,30,2,0,rep(1,30),1)
 
 p1 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_zdt1[1:500])) +
-  theme_bw() + labs(title = "ZDT1, Y = 2", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "ZDT1, k = 2", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1349,31 +1443,31 @@ p1 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_zdt1[1:500])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = zdt1_plot$gen[3], xend = zdt1_plot$gen[3], y = min(hv_values_zdt1)+2.5, yend = max(hv_values_zdt1), colour = "darkorchid", size=1.5, alpha=0.6) + 
-  annotate("segment", x = zdt1_plot$gen[4], xend = zdt1_plot$gen[4], y = min(hv_values_zdt1)+2.5, yend = max(hv_values_zdt1), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = zdt1_plot$gen[2], xend = zdt1_plot$gen[2], y = min(hv_values_zdt1)+2.5, yend = max(hv_values_zdt1), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = zdt1_plot$gen[5], xend = zdt1_plot$gen[5], y = min(hv_values_zdt1)+2.5, yend = max(hv_values_zdt1), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = zdt1_plot$gen[1], xend = zdt1_plot$gen[1], y = min(hv_values_zdt1)+2.5, yend = max(hv_values_zdt1), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = zdt1_plot$gen[3], y = min(hv_values_zdt1) +0.5, label = "OCD HV", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = zdt1_plot$gen[4], y = min(hv_values_zdt1)+0.5 , label = "LSSC", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = zdt1_plot$gen[2], y = min(hv_values_zdt1)+0.5 , label = "MGBM", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = zdt1_plot$gen[5], y = min(hv_values_zdt1) +0.5, label = "Entropy", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = zdt1_plot$gen[1], y = min(hv_values_zdt1) +0.5, label = "MPF", size = 4, angle = 90, vjust = 0.2)
+  annotate("segment", x = zdt1_plot$gen[3], xend = zdt1_plot$gen[3], y = min(hv_values_zdt1)+3, yend = max(hv_values_zdt1), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  annotate("segment", x = zdt1_plot$gen[4], xend = zdt1_plot$gen[4], y = min(hv_values_zdt1)+3, yend = max(hv_values_zdt1), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = zdt1_plot$gen[2], xend = zdt1_plot$gen[2], y = min(hv_values_zdt1)+3, yend = max(hv_values_zdt1), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = zdt1_plot$gen[5], xend = zdt1_plot$gen[5], y = min(hv_values_zdt1)+3, yend = max(hv_values_zdt1), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = zdt1_plot$gen[1], xend = zdt1_plot$gen[1], y = min(hv_values_zdt1)+3, yend = max(hv_values_zdt1), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = zdt1_plot$gen[3], y = min(hv_values_zdt1) +0.8, label = "OCD HV", size = 4, angle = 90, vjust = 0.2) +
+  annotate("text", x = zdt1_plot$gen[4], y = min(hv_values_zdt1)+0.8 , label = "LSSC", size = 4, angle = 90, vjust = 0.2) +
+  annotate("text", x = zdt1_plot$gen[2], y = min(hv_values_zdt1)+0.8 , label = "MGBM", size = 4, angle = 90, vjust = 0.2) +
+  annotate("text", x = zdt1_plot$gen[5], y = min(hv_values_zdt1) +0.8, label = "Entropy", size = 4, angle = 90, vjust = 0.2) +
+  annotate("text", x = zdt1_plot$gen[1], y = min(hv_values_zdt1) +0.8, label = "MPF", size = 4, angle = 90, vjust = 0.2)
 
 ### WFG2
 set.seed(123)
 optim_wfg2 <- mco::nsga2(wfg2_2Y, 20,2, generations = c(1:1000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg <- extract_pareto_front(optim_wfg2)
 
 hv_values_wfg2 <- sapply(pareto_fronts_wfg, function(pareto_fronts_wfg) dominatedHypervolume(pareto_fronts_wfg, rep(10,2)))
 
 set.seed(123)
-wfg2_plot <- optim_rep(wfg2_2Y,20,2,0,1,1)
+wfg2_plot <- optim_rep(wfg2_2Y,20,2,0,2*seq_len(20),1)
 
 p2 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_wfg2[1:500])) +
-  theme_bw() + labs(title = "WFG2, Y = 2", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG2, k = 2", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1388,31 +1482,31 @@ p2 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_wfg2[1:500])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment",x = wfg2_plot$gen[3], xend = wfg2_plot$gen[3], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "darkorchid", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot$gen[4], xend = wfg2_plot$gen[4], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot$gen[2], xend = wfg2_plot$gen[2], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot$gen[5], xend = wfg2_plot$gen[5], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot$gen[1], xend = wfg2_plot$gen[1], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = wfg2_plot$gen[3], y = min(hv_values_wfg2)+.05 , label = "OCD HV", size = 4, angle = 90, vjust = -0.2) +
-  annotate("text", x = wfg2_plot$gen[4], y = min(hv_values_wfg2)+.05 , label = "LSSC", size = 4, angle = 90, vjust = 0.5) +
-  annotate("text", x = wfg2_plot$gen[2], y = min(hv_values_wfg2)+.05 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text",  x = wfg2_plot$gen[5], y = min(hv_values_wfg2)+.05 , label = "Entropy", size = 4, angle = 90, vjust = 0.5) +
-  annotate("text", x = wfg2_plot$gen[1], y = min(hv_values_wfg2) +.05, label = "MPF", size = 4, angle = 90, vjust = 0.2)
+  annotate("segment",x = wfg2_plot$gen[3], xend = wfg2_plot$gen[3], y = min(hv_values_wfg2)+1.2, yend = max(hv_values_wfg2), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[4], xend = wfg2_plot$gen[4], y = min(hv_values_wfg2)+1.2, yend = max(hv_values_wfg2), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[2], xend = wfg2_plot$gen[2], y = min(hv_values_wfg2)+1.2, yend = max(hv_values_wfg2), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[5], xend = wfg2_plot$gen[5], y = min(hv_values_wfg2)+1.2, yend = max(hv_values_wfg2), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[1], xend = wfg2_plot$gen[1], y = min(hv_values_wfg2)+1.2, yend = max(hv_values_wfg2), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = wfg2_plot$gen[3], y = min(hv_values_wfg2)+.3 , label = "OCD HV", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg2_plot$gen[4], y = min(hv_values_wfg2)+.3 , label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg2_plot$gen[2], y = min(hv_values_wfg2)+.3 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text",  x = wfg2_plot$gen[5], y = min(hv_values_wfg2)+.3 , label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg2_plot$gen[1], y = min(hv_values_wfg2) +.3, label = "MPF", size = 4, angle = 90, vjust = 0.3)
 
 ### WFG3
-set.seed(123)
+set.seed(2503)
 optim_wfg3 <- mco::nsga2(wfg3_2Y, 20,2, generations = c(1:1000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg <- extract_pareto_front(optim_wfg3)
 
 hv_values_wfg3 <- sapply(pareto_fronts_wfg, function(pareto_fronts_wfg) dominatedHypervolume(pareto_fronts_wfg, rep(10,2)))
 
-set.seed(123)
-wfg3_plot <- optim_rep(wfg3_2Y,20,2,0,1,1)
+set.seed(2503)
+wfg3_plot <- optim_rep(wfg3_2Y,20,2,0,2*seq_len(20),1)
 
 p3 <- ggplot() + geom_point(aes(x=c(1:750),y=hv_values_wfg3[1:750])) +
-  theme_bw() + labs(title = "WFG3, Y = 2", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG3, k = 2", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1427,31 +1521,31 @@ p3 <- ggplot() + geom_point(aes(x=c(1:750),y=hv_values_wfg3[1:750])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = wfg3_plot$gen[3], xend = wfg3_plot$gen[3], y = min(hv_values_wfg3)+.25, yend = max(hv_values_wfg3), colour = "darkorchid", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot$gen[4], xend = wfg3_plot$gen[4], y = min(hv_values_wfg3)+.25, yend = max(hv_values_wfg3), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot$gen[2], xend = wfg3_plot$gen[2], y = min(hv_values_wfg3)+.25, yend = max(hv_values_wfg3), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot$gen[5], xend = wfg3_plot$gen[5], y = min(hv_values_wfg3)+.25, yend = max(hv_values_wfg3), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot$gen[1], xend = wfg3_plot$gen[1], y = min(hv_values_wfg3)+.25, yend = max(hv_values_wfg3), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = wfg3_plot$gen[3], y = min(hv_values_wfg3)+.05 , label = "OCD HV", size = 4, angle = 90, vjust = 0.1) +
-  annotate("text", x = wfg3_plot$gen[4], y = min(hv_values_wfg3)+.05 , label = "LSSC", size = 4, angle = 90, vjust = 1) +
-  annotate("text", x = wfg3_plot$gen[2], y = min(hv_values_wfg3)+.05 , label = "MGBM", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = wfg3_plot$gen[5], y = min(hv_values_wfg3)+.05 , label = "Entropy", size = 4, angle = 90, vjust = -0.7) +
-  annotate("text", x = wfg3_plot$gen[1], y = min(hv_values_wfg3) +.05, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+  annotate("segment", x = wfg3_plot$gen[3], xend = wfg3_plot$gen[3], y = min(hv_values_wfg3)+1.4, yend = max(hv_values_wfg3), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[4], xend = wfg3_plot$gen[4], y = min(hv_values_wfg3)+1.4, yend = max(hv_values_wfg3), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[2], xend = wfg3_plot$gen[2], y = min(hv_values_wfg3)+1.4, yend = max(hv_values_wfg3), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[5], xend = wfg3_plot$gen[5], y = min(hv_values_wfg3)+1.4, yend = max(hv_values_wfg3), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[1], xend = wfg3_plot$gen[1], y = min(hv_values_wfg3)+1.4, yend = max(hv_values_wfg3), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = wfg3_plot$gen[3], y = min(hv_values_wfg3)+.4 , label = "OCD HV", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg3_plot$gen[4], y = min(hv_values_wfg3)+.4 , label = "LSSC", size = 4, angle = 90, vjust = -0.2) +
+  annotate("text", x = wfg3_plot$gen[2], y = min(hv_values_wfg3)+.4 , label = "MGBM", size = 4, angle = 90, vjust = 0.5) +
+  annotate("text", x = wfg3_plot$gen[5], y = min(hv_values_wfg3)+.4 , label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg3_plot$gen[1], y = min(hv_values_wfg3) +.4, label = "MPF", size = 4, angle = 90, vjust = 0.3)
 
 ### WFG4
-set.seed(123)
+set.seed(2503)
 optim_wfg4 <- mco::nsga2(wfg4_2Y, 20,2, generations = c(1:5000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg <- extract_pareto_front(optim_wfg4)
 
 hv_values_wfg4 <- sapply(pareto_fronts_wfg, function(pareto_fronts_wfg) dominatedHypervolume(pareto_fronts_wfg, rep(10,2)))
 
-set.seed(123)
-wfg4_plot <- optim_rep(wfg4_2Y,20,2,0,1,1)
+set.seed(2503)
+wfg4_plot <- optim_rep(wfg4_2Y,20,2,0,2*seq_len(20),1)
 
 p4 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_wfg4[1:500])) +
-  theme_bw() + labs(title = "WFG4, Y = 2", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG4, k = 2", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1466,16 +1560,16 @@ p4 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_wfg4[1:500])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = wfg4_plot$gen[3], xend = wfg4_plot$gen[3], y = min(hv_values_wfg4)+1.1, yend = max(hv_values_wfg4), colour = "darkorchid", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg4_plot$gen[4], xend = wfg4_plot$gen[4], y = min(hv_values_wfg4)+1.1, yend = max(hv_values_wfg4), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg4_plot$gen[2], xend = wfg4_plot$gen[2], y = min(hv_values_wfg4)+1.1, yend = max(hv_values_wfg4), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg4_plot$gen[5], xend = wfg4_plot$gen[5], y = min(hv_values_wfg4)+1.1, yend = max(hv_values_wfg4), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg4_plot$gen[1], xend = wfg4_plot$gen[1], y = min(hv_values_wfg4)+1.1, yend = max(hv_values_wfg4), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = wfg4_plot$gen[3], y = min(hv_values_wfg4)+.2 , label = "OCD HV", size = 3.6, angle = 90, vjust = -0.5) +
-  annotate("text", x = wfg4_plot$gen[4], y = min(hv_values_wfg4)+.2 , label = "LSSC", size = 3.6, angle = 90, vjust = 0.8) +
-  annotate("text", x = wfg4_plot$gen[2], y = min(hv_values_wfg4)+.2 , label = "MGBM", size = 3.6, angle = 90, vjust = 0.5) +
-  annotate("text", x = wfg4_plot$gen[5], y = min(hv_values_wfg4)+.2 , label = "Entropy", size = 3.6, angle = 90, vjust = -0.2) +
-  annotate("text", x = wfg4_plot$gen[1], y = min(hv_values_wfg4) +.2, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+  annotate("segment", x = wfg4_plot$gen[3], xend = wfg4_plot$gen[3], y = min(hv_values_wfg4)+1.7, yend = max(hv_values_wfg4), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[4], xend = wfg4_plot$gen[4], y = min(hv_values_wfg4)+1.7, yend = max(hv_values_wfg4), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[2], xend = wfg4_plot$gen[2], y = min(hv_values_wfg4)+1.7, yend = max(hv_values_wfg4), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[5], xend = wfg4_plot$gen[5], y = min(hv_values_wfg4)+1.7, yend = max(hv_values_wfg4), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[1], xend = wfg4_plot$gen[1], y = min(hv_values_wfg4)+1.7, yend = max(hv_values_wfg4), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = wfg4_plot$gen[3], y = min(hv_values_wfg4)+.4 , label = "OCD HV", size = 3.6, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg4_plot$gen[4], y = min(hv_values_wfg4)+.4 , label = "LSSC", size = 3.6, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg4_plot$gen[2], y = min(hv_values_wfg4)+.4 , label = "MGBM", size = 3.6, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg4_plot$gen[5], y = min(hv_values_wfg4)+.4 , label = "Entropy", size = 3.6, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg4_plot$gen[1], y = min(hv_values_wfg4) +.4, label = "MPF", size = 4, angle = 90, vjust = 0.3)
 
 
 (p1 | p2) / (p3 |p4) 
@@ -1506,7 +1600,7 @@ pb_4Y_long %>%
     plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
     axis.title = element_text(size = 15),  
-    axis.text = element_text(size = 13),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
     legend.title = element_blank(),
     legend.text = element_blank(),
     legend.position = "none",
@@ -1520,19 +1614,19 @@ pb_4Y_long %>%
 
 ## Figure 7
 ### WFG2
-set.seed(2503)
+set.seed(123)
 optim_wfg2_4Y <- mco::nsga2(wfg2_4Y, 20,4, generations = c(1:5000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg2_4Y <- extract_pareto_front(optim_wfg2_4Y)
 
 hv_values_wfg2_4Y <- sapply(pareto_fronts_wfg2_4Y, function(pareto_fronts_wfg2_4Y) dominatedHypervolume(pareto_fronts_wfg2_4Y, rep(10,4)))
 
 set.seed(2503)
-wfg2_plot_4Y <- optim_rep(wfg2_4Y,20,4,0,1,1)
+wfg2_plot_4Y <- optim_rep(wfg2_4Y,20,4,0,2*seq_len(20),1)
 
 p2 <- ggplot() + geom_point(aes(x=c(1:800),y=hv_values_wfg2_4Y[1:800])) +
-  theme_bw() + labs(title = "WFG2, Y = 4", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG2, k = 4", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1547,30 +1641,30 @@ p2 <- ggplot() + geom_point(aes(x=c(1:800),y=hv_values_wfg2_4Y[1:800])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = wfg2_plot_4Y$gen[4], xend = wfg2_plot_4Y$gen[4], y = min(hv_values_wfg2_4Y)+20, yend = max(hv_values_wfg2_4Y), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot_4Y$gen[2], xend = wfg2_plot_4Y$gen[2], y = min(hv_values_wfg2_4Y)+20, yend = max(hv_values_wfg2_4Y), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot_4Y$gen[5], xend = wfg2_plot_4Y$gen[5], y = min(hv_values_wfg2_4Y)+20, yend = max(hv_values_wfg2_4Y), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg2_plot_4Y$gen[1], xend = wfg2_plot_4Y$gen[1], y = min(hv_values_wfg2_4Y) + 20, , yend = max(hv_values_wfg2_4Y), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = wfg2_plot_4Y$gen[4], y = min(hv_values_wfg2_4Y) + 5, label = "LSSC", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = wfg2_plot_4Y$gen[2], y = min(hv_values_wfg2_4Y) + 5, label = "MGBM", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = wfg2_plot_4Y$gen[5], y = min(hv_values_wfg2_4Y) + 5, label = "Entropy", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = wfg2_plot_4Y$gen[1], y = min(hv_values_wfg2_4Y) +5, label = "MPF", size = 4, angle = 90, vjust = 0.2)
+  #annotate("segment", x = wfg2_plot_4Y$gen[4], xend = wfg2_plot_4Y$gen[4], y = min(hv_values_wfg2_4Y)+20, yend = max(hv_values_wfg2_4Y), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot_4Y$gen[2], xend = wfg2_plot_4Y$gen[2], y = min(hv_values_wfg2_4Y)+250, yend = max(hv_values_wfg2_4Y), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot_4Y$gen[5], xend = wfg2_plot_4Y$gen[5], y = min(hv_values_wfg2_4Y)+250, yend = max(hv_values_wfg2_4Y), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot_4Y$gen[1], xend = wfg2_plot_4Y$gen[1], y = min(hv_values_wfg2_4Y) + 250, , yend = max(hv_values_wfg2_4Y), colour = "firebrick", size=1.5, alpha=0.6) +
+  #annotate("text", x = wfg2_plot_4Y$gen[4], y = min(hv_values_wfg2_4Y) + 5, label = "LSSC", size = 4, angle = 90, vjust = 0.2) +
+  annotate("text", x = wfg2_plot_4Y$gen[2], y = min(hv_values_wfg2_4Y) + 50, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg2_plot_4Y$gen[5], y = min(hv_values_wfg2_4Y) + 50, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg2_plot_4Y$gen[1], y = min(hv_values_wfg2_4Y) +50, label = "MPF", size = 4, angle = 90, vjust = 0.3)
 
 
 ### WFG3
-set.seed(123)
+set.seed(2503)
 optim_wfg3 <- mco::nsga2(wfg3_4Y, 20,4, generations = c(1:5000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg3_4Y <- extract_pareto_front(optim_wfg3)
 
 hv_values_wfg3_4Y <- sapply(pareto_fronts_wfg3_4Y, function(pareto_fronts_wfg3_4Y) dominatedHypervolume(pareto_fronts_wfg3_4Y, rep(10,4)))
 
-set.seed(123)
-wfg3_plot_4Y <- optim_rep(wfg3_4Y,20,4,0,1,1)
+set.seed(2503)
+wfg3_plot_4Y <- optim_rep(wfg3_4Y,20,4,0,2*seq_len(20),1)
 
 p3 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_wfg3_4Y[1:500])) +
-  theme_bw() + labs(title = "WFG3, Y = 4", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG3, k = 4", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1585,31 +1679,31 @@ p3 <- ggplot() + geom_point(aes(x=c(1:500),y=hv_values_wfg3_4Y[1:500])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = wfg3_plot_4Y$gen[4], xend = wfg3_plot_4Y$gen[4], y = min(hv_values_wfg3_4Y)+20, yend = max(hv_values_wfg3_4Y), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot_4Y$gen[2], xend = wfg3_plot_4Y$gen[2], y = min(hv_values_wfg3_4Y)+20, yend = max(hv_values_wfg3_4Y), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot_4Y$gen[5], xend = wfg3_plot_4Y$gen[5], y = min(hv_values_wfg3_4Y)+20, yend = max(hv_values_wfg3_4Y), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg3_plot_4Y$gen[1], xend = wfg3_plot_4Y$gen[1], y = min(hv_values_wfg3_4Y)+20, yend = max(hv_values_wfg3_4Y), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = wfg3_plot_4Y$gen[4], y = min(hv_values_wfg3_4Y) + 5, label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = wfg3_plot_4Y$gen[2], y = min(hv_values_wfg3_4Y) + 5, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = wfg3_plot_4Y$gen[5], y = min(hv_values_wfg3_4Y) + 5, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = wfg3_plot_4Y$gen[1], y = min(hv_values_wfg3_4Y) +5, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+  #annotate("segment", x = wfg3_plot_4Y$gen[4], xend = wfg3_plot_4Y$gen[4], y = min(hv_values_wfg3_4Y)+150, yend = max(hv_values_wfg3_4Y), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot_4Y$gen[2], xend = wfg3_plot_4Y$gen[2], y = min(hv_values_wfg3_4Y)+150, yend = max(hv_values_wfg3_4Y), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot_4Y$gen[5], xend = wfg3_plot_4Y$gen[5], y = min(hv_values_wfg3_4Y)+150, yend = max(hv_values_wfg3_4Y), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot_4Y$gen[1], xend = wfg3_plot_4Y$gen[1], y = min(hv_values_wfg3_4Y)+150, yend = max(hv_values_wfg3_4Y), colour = "firebrick", size=1.5, alpha=0.6) +
+  #annotate("text", x = wfg3_plot_4Y$gen[4], y = min(hv_values_wfg3_4Y) + 50, label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg3_plot_4Y$gen[2], y = min(hv_values_wfg3_4Y) + 50, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg3_plot_4Y$gen[5], y = min(hv_values_wfg3_4Y) + 50, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg3_plot_4Y$gen[1], y = min(hv_values_wfg3_4Y) +50, label = "MPF", size = 4, angle = 90, vjust = 0.3)
 
 
 
 ### WFG4
-set.seed(2503)
+set.seed(123)
 optim_wfg4_4Y <- mco::nsga2(wfg4_4Y, 20,4, generations = c(1:5000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg4_4Y <- extract_pareto_front(optim_wfg4_4Y)
 
 hv_values_wfg4_4Y <- sapply(pareto_fronts_wfg4_4Y, function(pareto_fronts_wfg4_4Y) dominatedHypervolume(pareto_fronts_wfg4_4Y, rep(10,4)))
 
-set.seed(2503)
-wfg4_plot_4Y <- optim_rep(wfg4_4Y,20,4,0,1,1)
+set.seed(123)
+wfg4_plot_4Y <- optim_rep(wfg4_4Y,20,4,0,2*seq_len(20),1)
 
 p4 <- ggplot() + geom_point(aes(x=c(1:5000),y=hv_values_wfg4_4Y[1:5000])) +
-  theme_bw() + labs(title = "WFG4, Y = 4", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG4, k = 4", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1624,9 +1718,9 @@ p4 <- ggplot() + geom_point(aes(x=c(1:5000),y=hv_values_wfg4_4Y[1:5000])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = wfg4_plot_4Y$gen[2], xend = wfg4_plot_4Y$gen[2], y = min(hv_values_wfg4_4Y)+200, yend = max(hv_values_wfg4_4Y), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg4_plot_4Y$gen[5], xend = wfg4_plot_4Y$gen[5], y = min(hv_values_wfg4_4Y)+200, yend = max(hv_values_wfg4_4Y), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg4_plot_4Y$gen[1], xend = wfg4_plot_4Y$gen[1], y = min(hv_values_wfg4_4Y)+200, yend = max(hv_values_wfg4_4Y), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("segment", x = wfg4_plot_4Y$gen[2], xend = wfg4_plot_4Y$gen[2], y = min(hv_values_wfg4_4Y)+250, yend = max(hv_values_wfg4_4Y), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot_4Y$gen[5], xend = wfg4_plot_4Y$gen[5], y = min(hv_values_wfg4_4Y)+250, yend = max(hv_values_wfg4_4Y), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot_4Y$gen[1], xend = wfg4_plot_4Y$gen[1], y = min(hv_values_wfg4_4Y)+250, yend = max(hv_values_wfg4_4Y), colour = "firebrick", size=1.5, alpha=0.6) +
   annotate("text", x = wfg4_plot_4Y$gen[2], y = min(hv_values_wfg4_4Y) + 50, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
   annotate("text", x = wfg4_plot_4Y$gen[5], y = min(hv_values_wfg4_4Y) + 50, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
   annotate("text", x = wfg4_plot_4Y$gen[1], y = min(hv_values_wfg4_4Y) + 50, label = "MPF", size = 4, angle = 90, vjust = 0.3)
@@ -1637,16 +1731,187 @@ p5 <- ggplot() +
 
 (p2 | p3) / (p4 |p5)
 
+# Results for 8-objective problems : Sect 4.2.3
+## Figure 8
+pb_8Y <-  results_tot %>% select(HV,critere,gen,time,time_tot,rep,Problem,Spread,nb_obj) %>% filter(nb_obj == 8)
+pb_8Y$time <- log(pb_8Y$time)
+pb_8Y$time_tot <- log(pb_8Y$time_tot)
+
+pb_8Y <- pb_8Y %>%
+  mutate(
+    HV     = ifelse(gen == 5000, NA, HV),
+    Spread = ifelse(gen == 5000, NA, Spread),
+    gen    = ifelse(gen == 5000, NA, gen)
+  )
+
+
+pb_8Y_long <- pb_8Y %>% pivot_longer(!c(rep,critere,Problem,nb_obj), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+pb_8Y_long %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(Problem~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+
+### WFG2
+set.seed(123)
+optim_wfg2 <- mco::nsga2(wfg2_8Y, 20,8, generations = c(1:1000), popsize = 100,
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
+
+pareto_fronts_wfg <- extract_pareto_front(optim_wfg2)
+
+hv_values_wfg2 <- sapply(pareto_fronts_wfg, function(pareto_fronts_wfg) dominatedHypervolume(pareto_fronts_wfg, rep(25,8)))
+
+set.seed(123)
+wfg2_plot <- optim_rep(wfg2_8Y,20,8,0,2*seq_len(20),1)
+
+p2 <- ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_wfg2[1:1000])) +
+  theme_bw() + labs(title = "WFG2, k = 8", x = "Generations", y="Hypervolume" )   +
+  theme(
+    plot.title = element_text( face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  #annotate("segment",x = wfg2_plot$gen[3], xend = wfg2_plot$gen[3], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  #annotate("segment", x = wfg2_plot$gen[4], xend = wfg2_plot$gen[4], y = min(hv_values_wfg2)+.3, yend = max(hv_values_wfg2), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[2], xend = wfg2_plot$gen[2], y = min(hv_values_wfg2)+0.05e+11, yend = max(hv_values_wfg2), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[5], xend = wfg2_plot$gen[5], y = min(hv_values_wfg2)+0.05e+11, yend = max(hv_values_wfg2), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg2_plot$gen[1], xend = wfg2_plot$gen[1], y = min(hv_values_wfg2)+0.05e+11, yend = max(hv_values_wfg2), colour = "firebrick", size=1.5, alpha=0.6) +
+  #annotate("text", x = wfg2_plot$gen[3], y = min(hv_values_wfg2)+.05 , label = "OCD HV", size = 4, angle = 90, vjust = -0.2) +
+  #annotate("text", x = wfg2_plot$gen[4], y = min(hv_values_wfg2)+.05 , label = "LSSC", size = 4, angle = 90, vjust = 0.5) +
+  annotate("text", x = wfg2_plot$gen[2], y = min(hv_values_wfg2)+0.01e+11 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text",  x = wfg2_plot$gen[5], y = min(hv_values_wfg2)+0.01e+11 , label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg2_plot$gen[1], y = min(hv_values_wfg2)+0.01e+11, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+p2
+### WFG3
+set.seed(2503)
+optim_wfg3 <- mco::nsga2(wfg3_8Y, 20,8, generations = c(1:1000), popsize = 100,
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
+
+pareto_fronts_wfg <- extract_pareto_front(optim_wfg3)
+
+hv_values_wfg3 <- sapply(pareto_fronts_wfg, function(pareto_fronts_wfg) dominatedHypervolume(pareto_fronts_wfg, rep(25,8)))
+
+set.seed(2503)
+wfg3_plot <- optim_rep(wfg3_8Y,20,8,0,2*seq_len(20),1)
+
+p3 <- ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_wfg3[1:1000])) +
+  theme_bw() + labs(title = "WFG3, k = 8", x = "Generations", y="Hypervolume" )   +
+  theme(
+    plot.title = element_text( face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  #annotate("segment", x = wfg3_plot$gen[3], xend = wfg3_plot$gen[3], y = min(hv_values_wfg3)+0.05e+8, yend = max(hv_values_wfg3), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  #annotate("segment", x = wfg3_plot$gen[4], xend = wfg3_plot$gen[4], y = min(hv_values_wfg3)+0.05e+8, yend = max(hv_values_wfg3), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[2], xend = wfg3_plot$gen[2], y = min(hv_values_wfg3)+0.02e+11, yend = max(hv_values_wfg3), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[5], xend = wfg3_plot$gen[5], y = min(hv_values_wfg3)+0.02e+11, yend = max(hv_values_wfg3), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg3_plot$gen[1], xend = wfg3_plot$gen[1], y = min(hv_values_wfg3)+0.02e+11, yend = max(hv_values_wfg3), colour = "firebrick", size=1.5, alpha=0.6) +
+  #annotate("text", x = wfg3_plot$gen[3], y = min(hv_values_wfg3)+0.01e+8 , label = "OCD HV", size = 4, angle = 90, vjust = 0.1) +
+  #annotate("text", x = wfg3_plot$gen[4], y = min(hv_values_wfg3)+0.01e+8 , label = "LSSC", size = 4, angle = 90, vjust = 1) +
+  annotate("text", x = wfg3_plot$gen[2], y = min(hv_values_wfg3)+0.005e+11 , label = "MGBM", size = 4, angle = 90, vjust = .8) +
+  annotate("text", x = wfg3_plot$gen[5], y = min(hv_values_wfg3)+0.005e+11 , label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg3_plot$gen[1], y = min(hv_values_wfg3) +0.005e+11, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+p3
+
+
+### WFG4
+set.seed(2503)
+optim_wfg4 <- mco::nsga2(wfg4_8Y, 20,8, generations = c(1:5000), popsize = 100,
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
+
+pareto_fronts_wfg <- extract_pareto_front(optim_wfg4)
+
+hv_values_wfg4 <- sapply(pareto_fronts_wfg, function(pareto_fronts_wfg) dominatedHypervolume(pareto_fronts_wfg, rep(25,8)))
+
+set.seed(2503)
+wfg4_plot <- optim_rep(wfg4_8Y,20,8,0,2*seq_len(20),1)
+
+p4 <- ggplot() + geom_point(aes(x=c(1:5000),y=hv_values_wfg4[1:5000])) +
+  theme_bw() + labs(title = "WFG4, k = 8", x = "Generations", y="Hypervolume" )   +
+  theme(
+    plot.title = element_text( face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  #annotate("segment", x = wfg4_plot$gen[3], xend = wfg4_plot$gen[3], y = min(hv_values_wfg4)+0.05e+8, yend = max(hv_values_wfg4), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  #annotate("segment", x = wfg4_plot$gen[4], xend = wfg4_plot$gen[4], y = min(hv_values_wfg4)+0.05e+8, yend = max(hv_values_wfg4), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[2], xend = wfg4_plot$gen[2], y = min(hv_values_wfg4)+0.05e+11, yend = max(hv_values_wfg4), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[5], xend = wfg4_plot$gen[5], y = min(hv_values_wfg4)+0.05e+11, yend = max(hv_values_wfg4), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg4_plot$gen[1], xend = wfg4_plot$gen[1], y = min(hv_values_wfg4)+0.05e+11, yend = max(hv_values_wfg4), colour = "firebrick", size=1.5, alpha=0.6) +
+  #annotate("text", x = wfg4_plot$gen[3], y = min(hv_values_wfg4)+0.01e+8 , label = "OCD HV", size = 4, angle = 90, vjust = 0.1) +
+  #annotate("text", x = wfg4_plot$gen[4], y = min(hv_values_wfg4)+0.01e+8 , label = "LSSC", size = 4, angle = 90, vjust = 1) +
+  annotate("text", x = wfg4_plot$gen[2], y = min(hv_values_wfg4)+0.02e+11 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg4_plot$gen[5], y = min(hv_values_wfg4)+0.02e+11 , label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg4_plot$gen[1], y = min(hv_values_wfg4) +0.02e11, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+p4
+
+p5 <- ggplot() + 
+  theme_void() + 
+  theme(panel.background = element_rect(fill = "white", color = NA))
+
+(p2 | p3) / (p4 |p5)
+
+
 ########################################
 ########## Industrial case #############
 ########################################
 # Evaluation of the stopping criteria on a cheese-making process optimization problem : Sect 4.3
-results_real_case <- read_rds("data/industrial_case/results_industrial_case.rds")
-
+results_real_case <- read_rds("C:/Users/manon/Documents/GitHub/Computo_MPerrignon/data/industrial_case/results_industrial_case.rds")
 ## Figure 8
 results_real_case$time <- log(results_real_case$time)
 results_real_case$time_tot <- log(results_real_case$time_tot)
-
+results_real_case$critere <- fct_relevel(results_real_case$critere, c("OCD_HV", "LSSC", "MGBM","Entropy","MPF"))
 results_real_case_long <- results_real_case %>% select(HV,critere,gen,time,time_tot,rep,Spread) %>% pivot_longer(!c(rep,critere), names_to = "Variables", values_to = "Valeurs")
 
 supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
@@ -1667,7 +1932,7 @@ results_real_case_long %>%
     plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
     axis.title = element_text(size = 15),  
-    axis.text = element_text(size = 13),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
     legend.title = element_blank(),
     legend.text = element_blank(),
     legend.position = "none",
@@ -1690,7 +1955,7 @@ hv_values_real <- sapply(Front_real, function(Front_real) dominatedHypervolume(F
 
 
 ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_real[1:1000])) +
-  theme_bw() + labs(title = "Industrial case, Y = 4", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "Industrial case, k = 4", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1705,16 +1970,16 @@ ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_real[1:1000])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = results_real_case$gen[498]-17, xend = results_real_case$gen[498]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "darkorchid", size=1.5, alpha=0.6) + # Don't forget to remove iterations without solutions
-  annotate("segment", x = results_real_case$gen[499]-17, xend = results_real_case$gen[499]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = results_real_case$gen[497]-17, xend = results_real_case$gen[497]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = results_real_case$gen[500]-17, xend = results_real_case$gen[500]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = results_real_case$gen[496]-17, xend = results_real_case$gen[496]-17, y = min(hv_values_real)+6, yend = max(hv_values_real), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = results_real_case$gen[498]-17, y = min(hv_values_real) + 1, label = "OCD HV", size = 4, angle = 90, vjust = 0.9) +
-  annotate("text", x = results_real_case$gen[499]-17, y = min(hv_values_real) + 1, label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = results_real_case$gen[497]-17, y = min(hv_values_real) + 1, label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = results_real_case$gen[500]-17, y = min(hv_values_real) + 1, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = results_real_case$gen[496]-17, y = min(hv_values_real) + 1, label = "MPF", size = 4, angle = 90, vjust = -0.1)
+  annotate("segment", x = results_real_case$gen[498]-17, xend = results_real_case$gen[498]-17, y = min(hv_values_real)+8.5, yend = max(hv_values_real), colour = "darkorchid", size=1.5, alpha=0.6) + # Don't forget to remove iterations without solutions
+  annotate("segment", x = results_real_case$gen[499]-17, xend = results_real_case$gen[499]-17, y = min(hv_values_real)+8.5, yend = max(hv_values_real), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = results_real_case$gen[497]-17, xend = results_real_case$gen[497]-17, y = min(hv_values_real)+8.5, yend = max(hv_values_real), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = results_real_case$gen[500]-17, xend = results_real_case$gen[500]-17, y = min(hv_values_real)+8.5, yend = max(hv_values_real), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = results_real_case$gen[496]-17, xend = results_real_case$gen[496]-17, y = min(hv_values_real)+8.5, yend = max(hv_values_real), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = results_real_case$gen[498]-17, y = min(hv_values_real) + 3, label = "OCD HV", size = 4, angle = 90, vjust = 0.9) +
+  annotate("text", x = results_real_case$gen[499]-17, y = min(hv_values_real) + 3, label = "LSSC", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = results_real_case$gen[497]-17, y = min(hv_values_real) + 3, label = "MGBM", size = 4, angle = 90, vjust = -0.3) +
+  annotate("text", x = results_real_case$gen[500]-17, y = min(hv_values_real) + 3, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = results_real_case$gen[496]-17, y = min(hv_values_real) + 3, label = "MPF", size = 4, angle = 90, vjust = -0.1)
 
 ########################################
 ############ Future Work ###############
@@ -1725,17 +1990,17 @@ wfg1_2Y <- makeWFG1Function(2,6,14)
 
 set.seed(123)
 optim_wfg1 <- mco::nsga2(wfg1_2Y, 20,2, generations = c(1:1000), popsize = 100,
-                         lower.bounds = rep(0, 20), upper.bounds = rep(1,20))
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
 
 pareto_fronts_wfg1 <- extract_pareto_front(optim_wfg1)
 
 hv_values_wfg1 <- sapply(pareto_fronts_wfg1, function(pareto_fronts_wfg1) dominatedHypervolume(pareto_fronts_wfg1, rep(10,2)))
 
 set.seed(123)
-wfg1_plot_2Y <- optim_rep(wfg1_2Y,20,2,0,1,1)
+wfg1_plot_2Y <- optim_rep(wfg1_2Y,20,2,0,2*seq_len(20),1)
 
 ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_wfg1[1:1000])) +
-  theme_bw() + labs(title = "WFG1, Y = 2", x = "Generations", y="Hypervolume" )   +
+  theme_bw() + labs(title = "WFG1, k = 2", x = "Generations", y="Hypervolume" )   +
   theme(
     plot.title = element_text( face = "bold", size = 16),  
     plot.subtitle = element_text(hjust = 0.5, size = 12),  
@@ -1750,13 +2015,13 @@ ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_wfg1[1:1000])) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) + 
-  annotate("segment", x = wfg1_plot_2Y$gen[3], xend = wfg1_plot_2Y$gen[3], y = min(hv_values_wfg1)+1.2, yend = max(hv_values_wfg1), colour = "darkorchid", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg1_plot_2Y$gen[4], xend = wfg1_plot_2Y$gen[4], y = min(hv_values_wfg1)+1.2, yend = max(hv_values_wfg1), colour = "darkcyan", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg1_plot_2Y$gen[2], xend = wfg1_plot_2Y$gen[2], y = min(hv_values_wfg1)+1.2, yend = max(hv_values_wfg1), colour = "#F194B4", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg1_plot_2Y$gen[5], xend = wfg1_plot_2Y$gen[5], y = min(hv_values_wfg1)+1.2, yend = max(hv_values_wfg1), colour = "goldenrod2", size=1.5, alpha=0.6) + 
-  annotate("segment", x = wfg1_plot_2Y$gen[1], xend = wfg1_plot_2Y$gen[1], y = min(hv_values_wfg1)+1.2, yend = max(hv_values_wfg1), colour = "firebrick", size=1.5, alpha=0.6) +
-  annotate("text", x = wfg1_plot_2Y$gen[3], y = min(hv_values_wfg1) +0.2, label = "OCD HV", size = 4, angle = 90, vjust = 0.2) +
-  annotate("text", x = wfg1_plot_2Y$gen[4], y = min(hv_values_wfg1)+0.2 , label = "LSSC", size = 4, angle = 90, vjust = 1.5) +
-  annotate("text", x = wfg1_plot_2Y$gen[2], y = min(hv_values_wfg1)+0.2 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
-  annotate("text", x = wfg1_plot_2Y$gen[5], y = min(hv_values_wfg1) +0.2, label = "Entropy", size = 4, angle = 90, vjust = -0.3) +
-  annotate("text", x = wfg1_plot_2Y$gen[1], y = min(hv_values_wfg1) +0.2, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+  annotate("segment", x = wfg1_plot_2Y$gen[3], xend = wfg1_plot_2Y$gen[3], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[4], xend = wfg1_plot_2Y$gen[4], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[2], xend = wfg1_plot_2Y$gen[2], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[5], xend = wfg1_plot_2Y$gen[5], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[1], xend = wfg1_plot_2Y$gen[1], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = wfg1_plot_2Y$gen[3], y = min(hv_values_wfg1) +0.4, label = "OCD HV", size = 4, angle = 90, vjust = 0) +
+  annotate("text", x = wfg1_plot_2Y$gen[4], y = min(hv_values_wfg1)+0.4 , label = "LSSC", size = 4, angle = 90, vjust = 0.5) +
+  annotate("text", x = wfg1_plot_2Y$gen[2], y = min(hv_values_wfg1)+0.4 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg1_plot_2Y$gen[5], y = min(hv_values_wfg1) +0.4, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg1_plot_2Y$gen[1], y = min(hv_values_wfg1) +0.4, label = "MPF", size = 4, angle = 90, vjust = 0.3)
