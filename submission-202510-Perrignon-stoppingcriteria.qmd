@@ -450,7 +450,7 @@ This project was supported by Fondation Institut Agro
 
 # Authorship contribution statement
 **Manon Perrignon:** Writing – original draft, Conceptualization, Methodology, Investigation, Simulation, Visualization.
-**Magalie Houee Bigot:** Writing – review & editing, Methodology, Investigation, Simulation.
+**Magalie Houée-Bigot:** Writing – review & editing, Methodology, Investigation, Simulation.
 **Romain Jeantet:** Writing – review
 & editing, Supervision,
 Conceptualization, Funding acquisition.
