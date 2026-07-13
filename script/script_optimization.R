@@ -25,10 +25,10 @@ library(ranger)
 ### Evaluation metrics 
 #### Entropy
 MultidimensionalHistogram <- function(P, Q, nb) {
-  # obtenir l'identifiant de cellule
+  # get the cell ID
   GetCellId <- function(solution, nb) {
-    # générer un identifiant de cellule
-    return(floor(solution * nb))  # suppose que les objectifs sont normalisés entre 0 et 1
+    # generate a cell ID
+    return(floor(solution * nb))  # assumes that the objctives are normalised between 0 and 1
   }
   
   C <- list()
@@ -37,7 +37,7 @@ MultidimensionalHistogram <- function(P, Q, nb) {
   Qc <- c()
   Qcq <- c()
   
-  # on parcourt la population p
+  # scan population P
   for (i in 1:nrow(P)) {
     s <- P[i, ]
     c <- paste(GetCellId(s, nb), collapse = "-")
@@ -52,7 +52,7 @@ MultidimensionalHistogram <- function(P, Q, nb) {
     }
   }
   
-  # parcourir la population Q
+  # scan population Q
   for (i in 1:nrow(Q)) {
     s <- Q[i, ]
     c <- paste(GetCellId(s, nb), collapse = "-")
@@ -73,7 +73,7 @@ MultidimensionalHistogram <- function(P, Q, nb) {
 }
 
 entropy <- function(P, Q, nb = 10) {
-  # Histogramme multidimensionnel
+  # Multidimensional histogram
   histo <- MultidimensionalHistogram(P, Q, nb)
   C <- histo$C
   Cq <- histo$Cq
@@ -95,7 +95,7 @@ entropy <- function(P, Q, nb = 10) {
     }
   }
   
-  # Cellules propres à Q
+  # Cells specific to Q
   for (i in seq_along(Cq)) {
     q <- Qcq[i] / nrow(Q)
     Dt <- Dt - q * log2(q)
@@ -192,11 +192,11 @@ MGBM_crit <- function(fronts, R = 0.1, Q = 0.0001, seuil = 0.05) {
     mdr <- mutual_dominance_rate(fronts[[gen]], fronts[[gen - 1]])
     mdr_values[gen - 1] <- mdr
     
-    # kalman 
+    # kalman filter
     x_hat_pred <- A * x_hat
     P_pred <- A * P * A + Q
     
-    # maj
+    # updated
     K <- P_pred / (P_pred + R)
     x_hat <- x_hat_pred + K * (mdr - x_hat_pred)
     P <- (1 - K) * P_pred
@@ -262,7 +262,7 @@ LSSC <- function(front, ref_point, window_size = 10, slope_min = 0.002) {
     else dominatedHypervolume(f, ref_point)
   }, numeric(1))
   
-  # Index des HV pour reconstituer la fenêtre
+  # Index of HVs for reconstructing the window
   valid_idx <- which(!is.na(hv_values))
   hv_valid  <- hv_values[valid_idx]
   nv        <- length(hv_valid)
@@ -308,7 +308,7 @@ Entropy_crit <- function(fronts, window=10, np=2, nb=10) {
       next
     }
     
-    # histogramme multidimensionnel (voir article)
+    # multidimensional histogram 
     histo <- MultidimensionalHistogram(P, Q, nb)
     C <- histo$C
     Cq <- histo$Cq
@@ -318,11 +318,11 @@ Entropy_crit <- function(fronts, window=10, np=2, nb=10) {
     
     Dt <- 0
     
-    # on cherche les cellules communes
+    # search for common cells
     for (i in seq_along(C)) {
       p <- Pc[i] / nrow(P)
       q <- Qc[i] / nrow(Q)
-      # application de la formule Kullback–Leibler divergence
+      # application of the Kullback–Leibler divergence formula
       if (q > 0) {
         Dt <- Dt - ((q / 2) * log2(q / p) + (p / 2) * log2(p / q))
       } else {
@@ -330,7 +330,7 @@ Entropy_crit <- function(fronts, window=10, np=2, nb=10) {
       }
     }
     
-    # cellules propres à Q
+    # cells specific to Q
     for (i in seq_along(Cq)) {
       q <- Qcq[i] / nrow(Q)
       Dt <- Dt - q * log2(q)
@@ -376,7 +376,7 @@ MP_crit_HV <- function(fronts, ref_point,window_size = 10, threshold = 1e-3, dec
       next
     }
     
-    # Calcul R2 et Entropy
+    # Calculation of HV and Entropy
     hv_i  <- dominatedHypervolume(front_i, ref_point)
     ent_i <- entropy(front_prev, front_i)
     
@@ -400,7 +400,7 @@ MP_crit_HV <- function(fronts, ref_point,window_size = 10, threshold = 1e-3, dec
         }
         
       }
-      # Met à jour les critères pour la prochaine comparaison
+      # Updates the criteria for the next comparison
       previous_crit_hv <- crit_stop_hv
       previous_crit_ent <- crit_stop_ent
       
@@ -611,7 +611,7 @@ dataXY <- data.frame(
   Y2 = Y2_grid
 )
 
-#write_rds(dataXY,"data/simulated_front/data_simulated_front.rds")
+write_rds(dataXY,"data/simulated_front/data_simulated_front.rds")
 
 ## Calculating the pareto front using the notion of point dominance
 ### Indicate that we want to maximise Y1 and Y2
@@ -661,7 +661,7 @@ results_simu <- optim_rep(obj_function,2,2,-10,10,100)
 
 results_simu$critere <- fct_relevel(results_simu$critere, c("OCD_HV", "LSSC", "MGBM","Entropy", "MPF"))
 
-#write_rds(results_simu,"data/simulated_front/results_simulated_front.rds")
+write_rds(results_simu,"data/simulated_front/results_simulated_front.rds")
 
 table_simu <- results_simu %>%
   group_by(critere) %>%
@@ -681,7 +681,7 @@ table_simu <- results_simu %>%
   mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
   mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`,`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) 
 
-#write_rds(table_simu, "tables/table_simu.rds")
+write_rds(table_simu, "tables/table_simu.rds")
 
 ########################################
 ########## Benchmark problem ###########
@@ -764,7 +764,7 @@ results_tot <- results_tot %>%
   )
 
 
-#write_rds(results_tot,"data/benchmark/results_benchmark_problems.rds")
+write_rds(results_tot,"data/benchmark/results_benchmark_problems.rds")
 
 ### Table for 2 objective
 table_2Y <- results_tot %>%
@@ -786,7 +786,7 @@ table_2Y <- results_tot %>%
   mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
   mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`,`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) 
 
-#write_rds(table_2Y, "tables/table_2Y.rds")
+write_rds(table_2Y, "tables/table_2Y.rds")
 
 ### Table for 4 objective
 table_4Y <- results_tot %>%
@@ -809,7 +809,7 @@ table_4Y <- results_tot %>%
   mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`), ~ round(., 2))) %>% 
   mutate(across(c(`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) 
 
-#write_rds(table_4Y, "tables/table_4Y.rds")
+write_rds(table_4Y, "tables/table_4Y.rds")
 
 ### Table for 8 objective
 table_8Y <- results_tot %>%
@@ -832,7 +832,7 @@ table_8Y <- results_tot %>%
   mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`), ~ round(., 2))) %>% 
   mutate(across(c(`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) 
 
-#write_rds(table_8Y, "tables/table_8Y.rds")
+write_rds(table_8Y, "tables/table_8Y.rds")
 
 
 ########################################
@@ -1060,7 +1060,7 @@ optim_rep_real <- function(probleme,var,obj,low,upp,rep){
 set.seed(123)
 results_real_case <- optim_rep_real(Funct_milk,36,4,Mini,Maxi,100)
 
-#write_rds(results_real_case,"data/industrial_case/results_industrial_case.rds")
+write_rds(results_real_case,"data/industrial_case/results_industrial_case.rds")
 
 ## Table for industrial case
 table_real_case <- results_real_case %>%
@@ -1083,7 +1083,7 @@ table_real_case <- results_real_case %>%
                   `Mean Time`, `Std Time`, `Mean Criterion Time`, `Std Criterion Time`), 
                 ~ round(., 3)))
 
-#write_rds(table_real_case,"tables/table_industrial_case.rds")
+write_rds(table_real_case,"tables/table_industrial_case.rds")
 
 ########################## VISUALIZATION ##################################
 
@@ -1907,7 +1907,7 @@ p5 <- ggplot() +
 ########## Industrial case #############
 ########################################
 # Evaluation of the stopping criteria on a cheese-making process optimization problem : Sect 4.3
-results_real_case <- read_rds("C:/Users/manon/Documents/GitHub/Computo_MPerrignon/data/industrial_case/results_industrial_case.rds")
+results_real_case <- read_rds("data/industrial_case/results_industrial_case.rds")
 ## Figure 8
 results_real_case$time <- log(results_real_case$time)
 results_real_case$time_tot <- log(results_real_case$time_tot)
