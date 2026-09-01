@@ -1,3 +1,564 @@
+```{r loading, echo=FALSE, warning=FALSE,message=FALSE,include=FALSE}
+# install.packages("mco")
+# install.packages("readr")
+# install.packages("tidyverse")
+# install.packages("smoof")
+# install.packages("tictoc")
+# install.packages("rPref")
+# install.packages("ggplot2")
+# install.packages("ranger")
+# install.packages("patchwork")
+# install.packages("ggh4x")
+# install.packages("ggpubr")
+
+library(mco)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(smoof)
+library(tictoc)
+library(rPref)
+library(ranger)
+library(patchwork)
+library(kableExtra)
+library(ggh4x)
+library(ggpubr)
+
+## Creating the necessary functions
+### Evaluation metrics 
+#### Entropy
+MultidimensionalHistogram <- function(P, Q, nb) {
+  # get the cell ID
+  GetCellId <- function(solution, nb) {
+    # generate a cell ID
+    return(floor(solution * nb))  # assumes that the objctives are normalised between 0 and 1
+  }
+  
+  C <- list()
+  Cq <- list()
+  Pc <- c()
+  Qc <- c()
+  Qcq <- c()
+  
+  # scan population P
+  for (i in 1:nrow(P)) {
+    s <- P[i, ]
+    c <- paste(GetCellId(s, nb), collapse = "-")
+    
+    if (c %in% C) {
+      k <- match(c, C)
+      Pc[k] <- Pc[k] + 1
+    } else {
+      C <- c(C, c)
+      Pc <- c(Pc, 1)
+      Qc <- c(Qc, 0)
+    }
+  }
+  
+  # scan population Q
+  for (i in 1:nrow(Q)) {
+    s <- Q[i, ]
+    c <- paste(GetCellId(s, nb), collapse = "-")
+    
+    if (c %in% C) {
+      k <- match(c, C)
+      Qc[k] <- Qc[k] + 1
+    } else if (c %in% Cq) {
+      k <- match(c, Cq)
+      Qcq[k] <- Qcq[k] + 1
+    } else {
+      Cq <- c(Cq, c)
+      Qcq <- c(Qcq, 1)
+    }
+  }
+  
+  return(list(C = C, Cq = Cq, Pc = Pc, Qc = Qc, Qcq = Qcq))
+}
+
+entropy <- function(P, Q, nb = 10) {
+  # Multidimensional histogram
+  histo <- MultidimensionalHistogram(P, Q, nb)
+  C <- histo$C
+  Cq <- histo$Cq
+  Pc <- histo$Pc
+  Qc <- histo$Qc
+  Qcq <- histo$Qcq
+  
+  Dt <- 0
+  
+  # Cellules communes
+  for (i in seq_along(C)) {
+    p <- Pc[i] / nrow(P)
+    q <- Qc[i] / nrow(Q)
+    
+    if (q > 0 && p > 0) {
+      Dt <- Dt - ((q / 2) * log2(q / p) + (p / 2) * log2(p / q))
+    } else if (p > 0) {
+      Dt <- Dt - p * log2(p)
+    }
+  }
+  
+  # Cells specific to Q
+  for (i in seq_along(Cq)) {
+    q <- Qcq[i] / nrow(Q)
+    Dt <- Dt - q * log2(q)
+  }
+  
+  return(Dt)
+}
+
+#### Mutual dominance rate
+dominates <- function(a, b) {
+  all(a <= b) && any(a < b)
+}
+
+mutual_dominance_rate <- function(front_n, front_n_1) {
+  n <- nrow(front_n)
+  m <- nrow(front_n_1)
+  
+  
+  count_dominance_n <- sum(sapply(1:n, function(i) {
+    any(sapply(1:m, function(j) dominates(front_n[i, ], front_n_1[j, ])))
+  }))
+  
+  count_dominance_n_1 <- sum(sapply(1:m, function(j) {
+    any(sapply(1:n, function(i) dominates(front_n_1[j, ], front_n[i, ])))
+  }))
+  
+  MDR <-  count_dominance_n / n - count_dominance_n_1 / m 
+  return(MDR)
+}
+
+#### For Hypervolume and Spread, functions are included in the package: mco
+
+### chi2 test
+chi2_test <- function(indic, varLimit) {
+  N <- length(indic) - 1
+  observed_var <- var(indic)
+  chi_stat <- observed_var * N / varLimit
+  p_value <- pchisq(chi_stat,N,lower.tail = T)
+  return(p_value)
+}
+
+### Extraction of the Pareto front
+extract_pareto_front <- function(MOO) {
+  lapply(seq_along(MOO), function(i) {
+    MOO[[i]]$value[MOO[[i]]$pareto.optimal, , drop = FALSE]
+  })
+}
+
+### Sliding window
+sliding_window <- function(x, window_size) {
+  windows <- list()
+  
+  for (i in 1:(length(x) - window_size + 1)) {
+    windows[[i]] <- x[i:(i + window_size - 1)]
+  }
+  
+  return(windows)
+}
+
+## Implementation of criteria 
+
+### MGBM
+MGBM_crit <- function(fronts, R = 0.1, Q = 0.0001, seuil = 0.05) {
+  num_generations <- length(fronts)
+  if (num_generations < 2) stop("Pas assez de générations")
+  
+  # Initialisation
+  A <- 1
+  P <- 0.1
+  mdr_values <- numeric(num_generations - 1)
+  filtered_values <- numeric(num_generations - 1)
+  
+  seuil_atteint_index <- NA
+  
+  gen_init <- 2
+  while (gen_init <= num_generations && (is.null(fronts[[gen_init]]) || is.null(fronts[[gen_init - 1]]) ||
+                                         nrow(fronts[[gen_init]]) == 0 || nrow(fronts[[gen_init - 1]]) == 0)) {
+    gen_init <- gen_init + 1
+  }
+  if (gen_init > num_generations) return(NA)
+  
+  mdr_values[gen_init - 1] <- mutual_dominance_rate(fronts[[gen_init]], fronts[[gen_init - 1]])
+  x_hat <- mdr_values[gen_init - 1]
+  filtered_values[gen_init - 1] <- x_hat
+  
+  if (x_hat <= seuil) {
+    seuil_atteint_index <- gen_init
+    return(as.numeric(seuil_atteint_index))
+  }
+  
+  
+  
+  for (gen in (gen_init + 1):num_generations) {
+    mdr <- mutual_dominance_rate(fronts[[gen]], fronts[[gen - 1]])
+    mdr_values[gen - 1] <- mdr
+    
+    # kalman filter
+    x_hat_pred <- A * x_hat
+    P_pred <- A * P * A + Q
+    
+    # updated
+    K <- P_pred / (P_pred + R)
+    x_hat <- x_hat_pred + K * (mdr - x_hat_pred)
+    P <- (1 - K) * P_pred
+    
+    filtered_values[gen - 1] <- x_hat
+    if (is.na(seuil_atteint_index) && x_hat <= seuil) {
+      seuil_atteint_index <- gen
+      break
+    }
+  }
+  
+  return(as.numeric(seuil_atteint_index))
+}
+
+## OCD_HV 
+OCD_HV <- function(front, ref_point, varLimit = 1e-3, window = 10, threshold = 0.05) {
+  
+  n_gen   <- length(front)
+  m       <- ncol(front[[1]])    
+  start   <- window                    
+  
+  # check the front outside the for loop
+  valid <- vapply(front, function(f) !is.null(f) && nrow(f) > 0, logical(1))
+  
+  # pre-calculation of HV
+  HVs_all <- vapply(seq_len(n_gen), function(i) {
+    if (valid[i]) dominatedHypervolume(front[[i]], ref_point) else NA
+  }, numeric(1))
+  
+  for (gen in start:n_gen) {
+    
+    idx <- (gen - window + 1):gen
+    
+    if (!all(valid[idx])) next
+    
+    # Direct extraction from the pre-calculated HV window
+    if (chi2_test(HVs_all[idx], varLimit) <= threshold) {
+      return(as.numeric(gen))
+    }
+  }
+  
+  return(as.numeric(n_gen))
+}
+
+## LSSC 
+LSSC <- function(front, ref_point, window_size = 10, slope_min = 0.002) {
+  n <- length(front)
+  if (n < window_size) return(FALSE)
+  
+  # pre-calculation (removed from the for loop)
+  time      <- seq_len(window_size)
+  mean_res  <- 1 - (2 / window_size)
+  var_res   <- (2 / window_size) - (4 / window_size^2)
+  thres     <- mean_res + 3 * sqrt(var_res)
+  
+  # pre-calcultation
+  time_mean <- mean(time)
+  time_var  <- sum((time - time_mean)^2)
+  
+  # pre-calculation of hv
+  hv_values <- vapply(front, function(f) {
+    if (is.null(f) || nrow(f) == 0) NA
+    else dominatedHypervolume(f, ref_point)
+  }, numeric(1))
+  
+  # Index of HVs for reconstructing the window
+  valid_idx <- which(!is.na(hv_values))
+  hv_valid  <- hv_values[valid_idx]
+  nv        <- length(hv_valid)
+  
+  if (nv < window_size) return(as.numeric(n))
+  
+  for (k in window_size:nv) {
+    window <- hv_valid[(k - window_size + 1):k]
+    
+    # manual linear regression (faster than lm)
+    w_mean <- mean(window)
+    b      <- sum((time - time_mean) * (window - w_mean)) / time_var
+    
+    if (abs(b) < slope_min) {          
+      a        <- w_mean - b * time_mean
+      residuals <- window - (a + b * time)
+      res_norm  <- sum(residuals^2) / window_size
+      
+      if (res_norm < thres) {
+        return(as.numeric(valid_idx[k]))
+      }
+    }
+  }
+  
+  return(as.numeric(n))
+}
+
+## Entropy 
+Entropy_crit <- function(fronts, window=10, np=2, nb=10) {
+  # initialisation
+  nGen <- length(fronts)
+  history_Mt <- c()
+  history_St <- c()
+  Dt_list <- c()
+  c1 <- FALSE
+  c2 <- FALSE
+  
+  for (t in 1:(nGen-1)) {
+    P <- fronts[[t]]
+    Q <- fronts[[t+1]]
+    
+    if (is.null(P) || is.null(Q) || nrow(P) == 0 || nrow(Q) == 0) {
+      next
+    }
+    
+    # multidimensional histogram 
+    histo <- MultidimensionalHistogram(P, Q, nb)
+    C <- histo$C
+    Cq <- histo$Cq
+    Pc <- histo$Pc
+    Qc <- histo$Qc
+    Qcq <- histo$Qcq
+    
+    Dt <- 0
+    
+    # search for common cells
+    for (i in seq_along(C)) {
+      p <- Pc[i] / nrow(P)
+      q <- Qc[i] / nrow(Q)
+      # application of the Kullback–Leibler divergence formula
+      if (q > 0) {
+        Dt <- Dt - ((q / 2) * log2(q / p) + (p / 2) * log2(p / q))
+      } else {
+        Dt <- Dt - p * log2(p)
+      }
+    }
+    
+    # cells specific to Q
+    for (i in seq_along(Cq)) {
+      q <- Qcq[i] / nrow(Q)
+      Dt <- Dt - q * log2(q)
+    }
+    
+    Dt_list <- c(Dt_list, Dt)
+    
+    
+    history_Mt[t] <- round(mean(Dt_list), np)
+    history_St[t] <- round(sd(Dt_list), np)
+    
+    if (t > window) {
+      if (
+        all(!is.na(history_Mt[(t - (window - 1)):t])) &&
+        all(!is.na(history_St[(t - (window - 1)):t]))
+      ) {
+        if (all(history_Mt[(t - (window-1)):t] == history_Mt[t])) c1 <- TRUE
+        if (all(history_St[(t - (window-1)):t] == history_St[t])) c2 <- TRUE
+      }
+      
+      if (c1 && c2) {
+        return(as.numeric(t))
+      }
+    }
+    
+  }
+  return(as.numeric(t))
+}
+
+## MPF
+MP_crit_HV <- function(fronts, ref_point,window_size = 10, threshold = 1e-3, dec=2) {
+  
+  hv_values <- c()
+  ent_values <- c()
+  previous_crit_hv <- NA
+  previous_crit_ent <- NA
+  
+  for (i in 2:length(fronts)) {
+    front_i   <- fronts[[i]]
+    front_prev <- fronts[[i - 1]]
+    
+    if (is.null(front_i) || is.null(front_prev) || nrow(front_i) == 0 || nrow(front_prev) == 0) {
+      next
+    }
+    
+    # Calculation of HV and Entropy
+    hv_i  <- dominatedHypervolume(front_i, ref_point)
+    ent_i <- entropy(front_prev, front_i)
+    
+    hv_values <- c(hv_values, hv_i)
+    ent_values <- c(ent_values, ent_i)
+    
+    if (i >= window_size) {
+      window_hv <- tail(hv_values, window_size)
+      window_ent <- tail(ent_values, window_size)
+      
+      crit_stop_hv <- abs(mean(window_hv))
+      
+      crit_stop_ent <- abs(mean(window_ent))
+      
+      if (!is.na(previous_crit_hv) && !is.na(previous_crit_ent)) {
+        delta_hv <- abs((crit_stop_hv - previous_crit_hv)/previous_crit_hv)*100
+        
+        
+        if (delta_hv < threshold && round(previous_crit_ent,dec)==round(crit_stop_ent,dec)) {
+          return(as.numeric(i))
+        }
+        
+      }
+      # Updates the criteria for the next comparison
+      previous_crit_hv <- crit_stop_hv
+      previous_crit_ent <- crit_stop_ent
+      
+    }
+    
+    
+  }
+  return(as.numeric(i))
+}
+
+
+## Function to obtain results after 100 repetitions
+optim_rep <- function(probleme,var,obj,low,upp,rep,ref,gen){
+  result_tot <- data.frame("critere"=NA, "HV"=NA, "Spread"=NA,"entropy" = NA, "MDR"=NA , "gen"=NA, "time" = NA, "time_tot" = NA ,"rep" = NA, "nb_obj" = NA)
+  tot_crit <- c()
+  
+  for (i in 1:rep){
+    optim <- mco::nsga2(probleme, var, obj, generations = c(1:gen), popsize = 100,
+                        lower.bounds = rep(low, var), upper.bounds = upp) 
+    front <- extract_pareto_front(optim)
+    
+    ref_point <- rep(ref,obj)
+    
+    # MPF
+    tic()
+    stop_mp_crit_hv <- MP_crit_HV(front, ref_point)
+    time_mp_hv <- toc()
+    time_mp_crit_hv <- (time_mp_hv$toc[["elapsed"]]-time_mp_hv$tic[["elapsed"]])/stop_mp_crit_hv
+    time_tot_mp_crit_hv <- (time_mp_hv$toc[["elapsed"]]-time_mp_hv$tic[["elapsed"]])
+    
+    if (is.na(stop_mp_crit_hv)) {
+      hv_mp_crit_hv <- NA
+      spd_mp_crit_hv <- NA
+      mdr_mp_crit_hv <- NA
+      ent_mp_crit_hv <- NA
+    } else {
+      hv_mp_crit_hv <- dominatedHypervolume(front[[stop_mp_crit_hv]], ref_point)
+      
+      spd_mp_crit_hv <- generalizedSpread(front[[stop_mp_crit_hv-1]], front[[stop_mp_crit_hv]])
+
+      mdr_mp_crit_hv <- mutual_dominance_rate(front[[stop_mp_crit_hv-1]], front[[stop_mp_crit_hv]])
+      
+      ent_mp_crit_hv <- entropy(front[[stop_mp_crit_hv-1]], front[[stop_mp_crit_hv]])
+    }
+    
+    
+    ## MGBM
+    tic()
+    stop_MGBM_crit <- MGBM_crit(front)
+    time_MGBM <- toc()
+    time_MGBM_crit <- (time_MGBM$toc[["elapsed"]]-time_MGBM$tic[["elapsed"]])/stop_MGBM_crit
+    time_tot_MGBM_crit <- (time_MGBM$toc[["elapsed"]]-time_MGBM$tic[["elapsed"]])
+    
+    if (is.na(stop_MGBM_crit)) {
+      hv_MGBM_crit <- NA
+      spd_MGBM_crit <- NA
+      mdr_MGBM_crit <- NA
+      ent_MGBM_crit <- NA
+    } else {
+      hv_MGBM_crit <- dominatedHypervolume(front[[stop_MGBM_crit]], ref_point)
+      
+      spd_MGBM_crit <- generalizedSpread(front[[stop_MGBM_crit-1]], front[[stop_MGBM_crit]])
+      
+      mdr_MGBM_crit <- mutual_dominance_rate(front[[stop_MGBM_crit-1]], front[[stop_MGBM_crit]])
+      
+      ent_MGBM_crit <- entropy(front[[stop_MGBM_crit-1]], front[[stop_MGBM_crit]])
+    }
+    
+    
+    ## OCD_HV
+    tic()
+    stop_OCD_crit <- OCD_HV(front, ref_point)
+    time_OCD <- toc()
+    time_OCD_crit <- (time_OCD$toc[["elapsed"]]-time_OCD$tic[["elapsed"]])/stop_OCD_crit
+    time_tot_OCD_crit <- (time_OCD$toc[["elapsed"]]-time_OCD$tic[["elapsed"]])
+    
+    if (is.na(stop_OCD_crit)) {
+      hv_OCD_crit <- NA
+      spd_OCD_crit <- NA
+      mdr_OCD_crit <- NA
+      ent_OCD_crit <- NA
+    } else {
+      hv_OCD_crit <- dominatedHypervolume(front[[stop_OCD_crit]], ref_point)
+      
+      spd_OCD_crit <- generalizedSpread(front[[stop_OCD_crit-1]], front[[stop_OCD_crit]])
+      
+      mdr_OCD_crit <- mutual_dominance_rate(front[[stop_OCD_crit-1]], front[[stop_OCD_crit]])
+      
+      ent_OCD_crit <- entropy(front[[stop_OCD_crit-1]], front[[stop_OCD_crit]])
+    }
+    
+    ## LSSC
+    tic()
+    stop_LSSC_crit <- LSSC(front, ref_point)
+    time_LSSC <- toc()
+    time_LSSC_crit <- (time_LSSC$toc[["elapsed"]]-time_LSSC$tic[["elapsed"]])/stop_LSSC_crit
+    time_tot_LSSC_crit <- (time_LSSC$toc[["elapsed"]]-time_LSSC$tic[["elapsed"]])
+    
+    if (is.na(stop_LSSC_crit)) {
+      hv_LSSC_crit <- NA
+      spd_LSSC_crit <- NA
+      mdr_LSSC_crit <- NA
+      ent_LSSC_crit <- NA
+    } else {
+      hv_LSSC_crit <- dominatedHypervolume(front[[stop_LSSC_crit]], ref_point)
+      
+      spd_LSSC_crit <- generalizedSpread(front[[stop_LSSC_crit-1]], front[[stop_LSSC_crit]])
+      
+      mdr_LSSC_crit <- mutual_dominance_rate(front[[stop_LSSC_crit-1]], front[[stop_LSSC_crit]])
+      
+      ent_LSSC_crit <- entropy(front[[stop_LSSC_crit-1]], front[[stop_LSSC_crit]])
+    }
+    
+    ## Entropy
+    tic()
+    stop_Ent_crit <- Entropy_crit(front)
+    time_Ent <- toc()
+    time_Ent_crit <- (time_Ent$toc[["elapsed"]]-time_Ent$tic[["elapsed"]])/stop_Ent_crit
+    time_tot_Ent_crit <- (time_Ent$toc[["elapsed"]]-time_Ent$tic[["elapsed"]])
+    
+    if (is.na(stop_Ent_crit)) {
+      hv_Ent_crit <- NA
+      spd_Ent_crit <- NA
+      mdr_Ent_crit <- NA
+      ent_Ent_crit <- NA
+    } else {
+      hv_Ent_crit <- dominatedHypervolume(front[[stop_Ent_crit]], ref_point)
+      
+      spd_Ent_crit <- generalizedSpread(front[[stop_Ent_crit-1]], front[[stop_Ent_crit]])
+      
+      mdr_Ent_crit <- mutual_dominance_rate(front[[stop_Ent_crit-1]], front[[stop_Ent_crit]])
+      
+      ent_Ent_crit <- entropy(front[[stop_Ent_crit-1]], front[[stop_Ent_crit]])
+    }
+    
+    ## Results
+    tot_crit$critere <- c("MPF","MGBM", "OCD_HV", "LSSC", "Entropy")
+    tot_crit$HV <- c(hv_mp_crit_hv,hv_MGBM_crit,hv_OCD_crit,hv_LSSC_crit,hv_Ent_crit)
+    tot_crit$Spread <- c(spd_mp_crit_hv,spd_MGBM_crit,spd_OCD_crit,spd_LSSC_crit,spd_Ent_crit)
+    tot_crit$entropy <- c(ent_mp_crit_hv,ent_MGBM_crit,ent_OCD_crit,ent_LSSC_crit,ent_Ent_crit)
+    tot_crit$MDR<- c(mdr_mp_crit_hv,mdr_MGBM_crit,mdr_OCD_crit,mdr_LSSC_crit,mdr_Ent_crit)
+    tot_crit$gen <- c(stop_mp_crit_hv,stop_MGBM_crit,stop_OCD_crit,stop_LSSC_crit,stop_Ent_crit)
+    tot_crit$time <- c(time_mp_crit_hv,time_MGBM_crit,time_OCD_crit,time_LSSC_crit,time_Ent_crit)
+    tot_crit$time_tot <- c(time_tot_mp_crit_hv,time_tot_MGBM_crit,time_tot_OCD_crit,time_tot_LSSC_crit,time_tot_Ent_crit)
+    tot_crit$rep <- i
+    tot_crit$nb_obj <- obj
+    tot_crit <- as.data.frame(tot_crit)
+    
+    result_tot <- rbind(result_tot,tot_crit)
+    print(i)
+  }
+  return(result_tot[-1,])
+}
+```
+
 # Introduction
 Industrial performance is a key issue for companies, particularly in the food sector, where turnover is usually very low and the sector is highly challenging. It reflects a production system's ability to meet its quality, cost, sustainability and environmental impact objectives [@madoumier_towards_2019]. Industrial performance is a multifaceted concept assessed through a variety of interdependent and sometimes contradictory indicators. Therefore, optimizing performance means finding a balance between multiple objectives, adding complexity to the decision-making process [@drofenik_multi-objective_2023].
 
@@ -5,7 +566,7 @@ To address this challenge, multi-objective optimization methods provide a rigoro
 
 For most algorithms, the stopping criterion corresponds to the maximum number of generations to be performed, which is set *a priori* by the user. However, this predefined number of generations does not guarantee the quality of the solutions if it is too low or may lead to unnecessary consumption of computational resources if it is too high. In the latter case, the algorithm continues processing even when improvements are minimal or non-existent [@roudenko_steady_2004]. An effective stopping criterion would be to find the minimum number of generations beyond which the algorithm cannot improve the quality of the solutions. The quality of the Pareto front is usually measured using two main categories of metrics: diversity metrics and convergence metrics [@li_quality_2020]. Diversity metrics assess how well the solutions are distributed along the Pareto front, ensuring adequate coverage of the objective space. Their goal is to avoid clustering in specific regions and to promote a large and uniform exploration of the objective space. Examples of metrics include spacing measures and entropy-based metrics. Convergence metrics, on the other hand, either evaluate how close the current solutions are to the theoretical Pareto front, when this is known in advance; or evaluate the extension of the Pareto front with respect to a reference point in objective space. Common metrics in this category include hypervolume and generational distance [@liu_termination_2018]. Hypervolume measures the space covered by solutions in the objective space and generational distance measures the distance of the front from a reference front [@audet_performance_2021]. To guarantee the quality of the solutions when the algorithm stops, a stopping criterion based on the evaluation metrics of the solutions is required. In this regard, several stopping criteria based on the quality of the solutions have been proposed in the literature.
 
-A typical stopping criterion contains two main components: an evaluation metric and a termination criterion. The evaluation metric measures the evolution of the solutions, while the termination criterion determines whether the algorithm should stop depending on the evaluation metric [@liu_termination_2018]. For comparative purposes, four criteria frequently used in the literature were selected. These criteria are defined based on various evaluation metrics and termination criteria. The MGBM criterion belongs to the class of convergence based metric with the Mutual Domination Rate (MDR) coupled with a Kalman filter [@marti_stopping_2016]. The OCD HV (Online Convergence Detection based on Hypervolume) criterion relies on a Chi-squared and the hypervolume convergence metric to evaluate the algorithm’s progress [@wagner_ocd_2009]. The advantage of this criterion is its reduced computational complexity, although according to the literature, it tends to stop too early [@wagner_ocd_2009]. The LSSC (Least Square Stopping Criterion) is based on the analysis of residuals from a linear regression applied to the evolution of an evaluation metric over a window of generations. In this paper, the chosen metric is hypervolume. This criterion aims to be easy to implement [@guerrero_introducing_2010]. Finally, the entropy-based criterion (Population-based entropy) calculates a dissimilarity measure based on entropy between solution populations across generations [@saxena_entropy-based_2016].
+A typical stopping criterion contains two main components: an evaluation metric and a termination criterion. The evaluation metric measures the evolution of the solutions, while the termination criterion determines whether the algorithm should stop depending on the evaluation metric [@liu_termination_2018]. For comparative purposes, four criteria frequently used in the literature were selected. These criteria are defined based on various evaluation metrics and termination criteria. The MGBM criterion belongs to the class of convergence based metric with the Mutual Domination Rate (MDR) coupled with a Kalman filter [@marti_stopping_2016]. The OCD HV (Online Convergence Detection based on Hypervolume) criterion relies on a Chi-squared and the hypervolume convergence metric to evaluate the algorithm’s progress [@wagner_ocd_2009]. The advantage of this criterion is its reduced computational complexity, although according to the literature, it tends to stop too early [@wagner_ocd_2009]. The LSSC (Least Square Stopping Criterion) criterion is based on the analysis of residuals from a linear regression applied to the evolution of an evaluation metric over a window of generations. In this paper, the chosen metric is hypervolume. This criterion aims to be easy to implement [@guerrero_introducing_2010]. Finally, the entropy-based criterion (Population-based entropy) calculates a dissimilarity measure based on entropy between solution populations across generations [@saxena_entropy-based_2016].
 
 Stopping criteria have already been compared on standard multi-objective problems commonly found in the literature [@abu_doush_effect_2023;@marti_stopping_2016]. These comparative studies highlight that there is no single optimal stopping criterion suitable for all algorithms and problem types. OCD HV criterion has been shown to stop earlier than others, while MGBM can suffer from significant computational cost. The effectiveness of a given criterion can be influenced by the specific characteristics of the problem being addressed [@abu_doush_effect_2023]. Moreover, some criteria may become computationally expensive as the number of objectives increases. This is the case with the hypervolume metric [@liefooghe_correlation_2016]. Additionally, the literature demonstrates that the quality of a Pareto front cannot be adequately assessed by a single evaluation metric [@tsarmpopoulos_performance_2019;@halim_performance_2021]. Therefore, it is crucial to develop more robust and adaptive stopping criteria, for example by combining multiple evaluation metrics of the Pareto front.
 
@@ -117,12 +678,187 @@ Y_k(X_1, X_2) = \sum_{i=1}^{n_k} h_{k,i} \cdot \exp\left(-\frac{(X_1 - \mu_{k,i}
 
 The domain is discretized using a regular grid of size $50 \times 50$, forming a total of 2500 input points. This formulation produces smooth surfaces where the means, standard deviations and weights of the Gaussian functions influence the trade-offs between objectives. The theoretical Pareto front is obtained by evaluating all solutions in the objective space $(Y_1, Y_2)$ and selecting only the non-dominated points (those for which no other solution improves one objective without degrading the other). However, the evaluated grid does not capture all non-dominated points but only a subset, providing an approximation of the theoretical Pareto front. The simulated objectives $Y_1$ and $Y_2$, along with the corresponding approximate Pareto Front, are shown in @fig-1.
 
-![Visualization of $Y_1$ and $Y_2$ as a function of $X_1$ and $X_2$ and the approximate Pareto front obtained from the functions of $Y_1$ and $Y_2$. The aim is to maximize $Y_1$ and $Y_2$.](figures/Figure1.png){#fig-1}
+```{r ,fig.height=8, fig.width=8, echo=FALSE}
+#| label: fig-1
+#| message: false
+#| warning: false
+#| fig-cap: "Visualization of $Y_1$ and $Y_2$ as a function of $X_1$ and $X_2$ and the approximate Pareto front obtained from the functions of $Y_1$ and $Y_2$. The aim is to maximize $Y_1$ and $Y_2$."
+# Comparison with the simulated Pareto Front : Sect 4.1
+## Creating the grid
+set.seed(555)
+grid_size <- 50 
+x1_seq <- seq(-10, 10, length.out = grid_size)
+x2_seq <- seq(-10, 10, length.out = grid_size)
+
+X1_grid <- rep(x1_seq, each = grid_size)
+X2_grid <- rep(x2_seq, times = grid_size)
+
+## Gaussian function
+gaussian_function <- function(X1, X2, centers, sigmas, heights) {
+  result <- rep(0, length(X1))
+  for (i in seq_along(centers)) {
+    center <- centers[[i]]
+    sigma <- sigmas[i]
+    height <- heights[i]
+    distance_squared <- (X1 - center[1])^2 + (X2 - center[2])^2
+    result <- result + height * exp(-distance_squared / (2 * sigma^2)) 
+  }
+  return(result)
+}
+
+## Initialization of Gaussian parameters
+### Y1
+centers_Y1 <- list(c(-7, -5), c(1, 4))  
+sigmas_Y1 <- c(2, 1)
+heights_Y1 <- c(0.7, 0.5)
+
+### Y2
+centers_Y2 <- list(c(-5,-3), c(6, -4))  
+sigmas_Y2 <- c(2, 1.5)  
+heights_Y2 <- c(0.6, 0.4)
+
+## Simulation of Y1 and Y2
+set.seed(456)
+Y1_grid <- gaussian_function(X1_grid, X2_grid, centers_Y1, sigmas_Y1,heights_Y1)
+set.seed(456)
+Y2_grid <- gaussian_function(X1_grid, X2_grid, centers_Y2, sigmas_Y2,heights_Y2)
+
+## Data recovery
+Y1_matrix <- matrix(Y1_grid, nrow = grid_size, ncol = grid_size)
+Y2_matrix <- matrix(Y2_grid, nrow = grid_size, ncol = grid_size)
+
+dataXY <- data.frame(
+  X1 = X1_grid,
+  X2 = X2_grid,
+  Y1 = Y1_grid,
+  Y2 = Y2_grid
+)
+
+## Calculating the pareto front using the notion of point dominance
+### Indicate that we want to maximise Y1 and Y2
+p_test <- high(dataXY$Y1) * high(dataXY$Y2)
+
+pareto_test <- psel(dataXY, p_test)
+
+# Figure 1
+plot_Y1 <- ggplot(dataXY, aes(x = X1, y = X2, z = Y1)) +
+  geom_contour(colour = "dodgerblue3") +
+  xlim(-10,10) + ylim(-10,10) +
+  labs(
+    x     = expression(X[1]),
+    y     = expression(X[2]),
+    title = expression(bold(Y[1]~"based on"~X[1]~"and"~X[2]))
+  ) +
+  theme_bw() + 
+  theme(
+    plot.title = element_text(face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+
+
+plot_Y2 <- ggplot(dataXY, aes(x = X1, y = X2, z = Y2)) +
+  geom_contour(colour = "dodgerblue3") +
+  xlim(-10,10) + ylim(-10,10) +
+  theme_bw() + labs(
+    x     = expression(X[1]),
+    y     = expression(X[2]),
+    title = expression(bold(Y[2]~"based on"~X[1]~"and"~X[2]))
+  )  +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+ParetFront_theo <- ggplot(pareto_test) + geom_line(aes(x=Y1, y=Y2)) +
+  theme_bw() +
+  labs(x = expression(Y[1]),
+       y = expression(Y[2]),
+       title = "Approximate Pareto Front")  +
+  theme(
+    plot.title = element_text( face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+
+
+(plot_Y1 | plot_Y2) / ParetFront_theo 
+```
 
 
 ## Multi-objective problem benchmarks
 
 To compare the selected stopping criteria, several multi-objective optimization benchmark problems were selected, covering a variety of Pareto front structures. The well-known and widely used ZDT1 problem has a convex and continuous front, making it a simple case for an initial comparison [@deb_scalable_2005]. The WFG2 problem introduces complexities with a non-convex and discontinuous front, as well as multimodality in the form of plateaus. A problem is multimodal if it contains several local optima (solutions not locally dominated but dominated by other solutions on the front). The WFG3 problem exhibits degeneracy due to the high correlation between objectives, providing a good case study for assessing the robustness of the criterion in relation to redundancy and dependency between objectives (which is common in real problems). Finally, WFG4, characterized by high multimodality and a concave front, is useful for testing the criterion's ability to avoid local minima [@huband_review_2006]. The large scope of these benchmark scenarios makes it possible to compare the performance of the stopping criteria on fronts of various shapes and complexities. In addition, as the WFG problems are scalable, they were used to analyze the impact of increasing the number of objectives on the behavior of the stopping criterion, with tests carried out for 2 objectives, then 4 and 8 objectives with 20 variables for both configurations. Problem ZDT1 was used in its classic configuration, with 2 objectives and 30 variables. Although the full ZDT and WFG suites were not used, the aim was to sample a variety of Pareto front shapes (such as convex, concave, discontinuous, degenerate and multimodal) in order to draw meaningful conclusions about the behavior of the stopping criteria across different problem types. This approach has been implemented using *mco* package.
+
+```{r benchmark, echo=FALSE, warning=FALSE,message=FALSE,include=FALSE}
+### two-objective problems : Sect 4.2.1
+
+set.seed(2503)
+wfg2_2Y <- makeWFG2Function(2,6,14)
+
+set.seed(2503)
+wfg3_2Y <- makeWFG3Function(2,6,14)
+
+set.seed(2503)
+wfg4_2Y <- makeWFG4Function(2,6,14)
+
+### four-objective problems : Sect 4.2.2
+set.seed(123)
+wfg2_4Y <- makeWFG2Function(4,6,14)
+
+set.seed(2503)
+wfg3_4Y <- makeWFG3Function(4,6,14)
+
+set.seed(2503)
+wfg4_4Y <- makeWFG4Function(4,6,14)
+
+### Results for six-objective problems : not included
+set.seed(123)
+wfg2_6Y <- makeWFG2Function(6,10,10)
+
+set.seed(2503)
+wfg3_6Y <- makeWFG3Function(6,10,10)
+
+set.seed(2503)
+wfg4_6Y <- makeWFG4Function(6,10,10)
+
+### eight-objective problems : Sect 4.2.3
+set.seed(123)
+wfg2_8Y <- makeWFG2Function(8,14,6)
+
+set.seed(2503)
+wfg3_8Y <- makeWFG3Function(8,14,6)
+
+set.seed(2503)
+wfg4_8Y <- makeWFG4Function(8,14,6)
+```
 
 ## Industrial application
 
@@ -154,13 +890,304 @@ $\hat{f}_k(x)$ is a machine learning model corresponding to indicator. The const
 
 ## Comparison with the simulated Pareto front
 
-The stopping criteria were evaluated on optimization tasks using the simulated objective functions. @fig-2 reports the results over 100 repetitions for each criterion and @fig-3 shows the fronts obtained after the iteration is stop by the stopping criteria compared with the simulated front. Detailed numerical results are provided in the appendix (@tbl-table1).
+The stopping criteria were evaluated on optimization tasks using the simulated objective functions. @fig-2 reports the results for each criterion and @fig-3 shows the fronts obtained after the iteration is stop by the stopping criteria compared with the simulated front. Detailed numerical results are provided in the appendix (@tbl-table1). For illustrative purposes, @fig-2 is presented in two parts. @fig-2-1 illustrates the procedure on a reduced example restricted to 5 independent repetitions, making the underlying code accessible without incurring excessive computation time. @fig-2-2 then reports the full results obtained over 100 independent repetitions, which are the results used for the subsequent analysis. The same calculation procedure is applied throughout the following sections, however, given the longer computation times involved, the corresponding scripts are available in the associated GitHub repository, without being executed directly within the document.
 
-![Optimization results for a simulated problem across stopping criteria. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed).](figures/Figure2.png){#fig-2}
+```{r result for simulated front, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+obj_function <- function(x) {
+  
+  val_opt <- data.frame(t(x))
+  
+  predictions <- matrix(NA, nrow = nrow(val_opt), ncol = 2)
+  
+  predY1 <- rep(0, length(val_opt$X1))
+  center_Y1 <- list(c(-7, -5), c(1, 4))
+  sigmas <-  c(2, 1)
+  heights <- c(0.7, 0.5)
+  
+  for (i in seq_along(center_Y1)) {
+    center <- center_Y1[[i]]
+    sigma <- sigmas[i]
+    height <- heights[i]
+    distance_squared <- (val_opt$X1 - center[1])^2 + (val_opt$X2 - center[2])^2
+    predY1 <- predY1 + height * exp(-distance_squared / (2 * sigma^2)) # Gaussian with height
+  }
+  
+  predY2 <- rep(0, length(val_opt$X1))
+  center_Y2 <- list(c(-5,-3), c(6, -4)) 
+  sigmas <-  c(2, 1.5)
+  heights <- c(0.6, 0.4)
+  
+  for (i in seq_along(center_Y2)) {
+    center <- center_Y2[[i]]
+    sigma <- sigmas[i]
+    height <- heights[i]
+    distance_squared <- (val_opt$X1 - center[1])^2 + (val_opt$X2 - center[2])^2
+    predY2 <- predY2 + height * exp(-distance_squared / (2 * sigma^2)) # Gaussian with height
+  }
+  
+  predictions <- as.matrix(data.frame(Y1 = -predY1,Y2=-predY2))
+  return(predictions = predictions)
+}
+
+results_simu_5rep <- optim_rep(obj_function,2,2,-10,rep(10,2),5,10,300)
+
+results_simu_5rep$critere <- fct_relevel(results_simu_5rep$critere, c("OCD_HV", "LSSC", "MGBM","Entropy", "MPF"))
+
+```
+
+::: {#fig-2}
+
+```{r , fig.height=4.5, fig.width=15, echo=FALSE}
+#| label: fig-2-1
+#| message: false
+#| warning: false
+#| results: hide
+#| fig-cap: "5 independent optimization runs."
+# Figure 2.1
+
+results_simu_5rep <- results_simu_5rep
+results_simu_5rep$time <- log(results_simu_5rep$time)
+results_simu_5rep$time_tot <- log(results_simu_5rep$time_tot)
+results_simu_5rep <- results_simu_5rep %>% select(HV,critere,gen,time,time_tot,rep,Spread) %>% pivot_longer(!c(rep,critere), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+results_simu_5rep %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 17),  
+    axis.text.x = element_text(size = 13, face = "bold", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 13),
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+```
+
+```{r , fig.height=4.5, fig.width=15, echo=FALSE}
+#| label: fig-2-2
+#| message: false
+#| warning: false
+#| results: hide
+#| fig-cap: "100 independent optimization runs."
+# Figure 2
+results_simu <- read_rds("data/simulated_front/results_simulated_front.rds")
+
+results_simu_log <- results_simu
+results_simu_log$time <- log(results_simu_log$time)
+results_simu_log$time_tot <- log(results_simu_log$time_tot)
+results_simu_long <- results_simu_log %>% select(HV,critere,gen,time,time_tot,rep,Spread) %>% pivot_longer(!c(rep,critere), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+results_simu_long %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 17),  
+    axis.text.x = element_text(size = 13, face = "bold", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 13),
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+```
+
+Optimization results for a simulated problem across stopping criteria. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed).
+:::
 
 According to @fig-2, the differences between the stopping criteria are not particularly pronounced in terms of hypervolume values. All criteria appear to successfully reach the Pareto front (@fig-3). However, there are variations in the number of generations before termination. The Entropy criterion tends to stop after a higher number of generations than the OCD HV or LSSC criteria. Since the objective functions (i.e. $Y_1$ and $Y_2$ as functions of $X_1$ and $X_2$) are relatively simple, the Pareto front stabilizes after only a few generations. This stabilization is accurately detected by all criteria.
+```{r ,fig.height=6, fig.width=8, echo=FALSE}
+#| label: fig-3
+#| message: false
+#| warning: false
+#| fig-cap: "Comparison of the Pareto Fronts obtained for each stopping criterion with the simulated Pareto Front. The black line corresponds to the simulated Pareto front."
+# Figure 3
+## Recovery of Pareto fronts for each stop proposed by the criteria for the first repetition
+set.seed(2503)
+front_MPF <- nsga2(obj_function, 2, 2, generations = results_simu$gen[1], popsize = 100,
+                   lower.bounds = rep(-10, 2), upper.bounds = rep(10, 2))
 
-![Comparison of the Pareto Fronts obtained for each stopping criterion with the simulated Pareto Front. The black line corresponds to the simulated Pareto front](figures/Figure3.png){#fig-3}
+set.seed(2503)
+front_MGBM <- nsga2(obj_function, 2, 2, generations = results_simu$gen[2], popsize = 100,
+                    lower.bounds = rep(-10, 2), upper.bounds = rep(10, 2))
+set.seed(2503)
+front_LSSC <- nsga2(obj_function, 2, 2, generations = results_simu$gen[4], popsize = 100,
+                    lower.bounds = rep(-10, 2), upper.bounds = rep(10, 2))
+set.seed(2503)
+front_entropy <- nsga2(obj_function, 2, 2, generations = results_simu$gen[5], popsize = 100,
+                       lower.bounds = rep(-10, 2), upper.bounds = rep(10, 2))
+set.seed(2503)
+front_ocd <- nsga2(obj_function, 2, 2, generations = results_simu$gen[3], popsize = 100,
+                   lower.bounds = rep(-10, 2), upper.bounds = rep(10, 2))
+
+MPF_plot <- ggplot() + 
+  geom_line(data = pareto_test, aes(x=Y1,Y2),size=1) +
+  geom_point(aes(x=-front_MPF$value[front_MPF$pareto.optimal, , drop = FALSE][,1],
+                 y=-front_MPF$value[front_MPF$pareto.optimal,,drop = FALSE][,2]), col = "firebrick", size = 2, alpha= .5, shape= 16) +
+  labs(
+    title = "",
+    x = expression(Y[1]),
+    y = expression(Y[2])
+  ) + 
+  theme_bw() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )  + 
+  annotate("text", x = .3, y = .25, label = paste("Gen = ", results_simu$gen[1]), 
+           hjust = -0.1, vjust = 1.1, size = 4)
+
+MGBM_plot <- ggplot() + 
+  geom_line(data = pareto_test, aes(x=Y1,Y2),size=1) +
+  geom_point(aes(x=-front_MGBM$value[front_MGBM$pareto.optimal,, drop = FALSE][,1], 
+                 y=-front_MGBM$value[front_MGBM$pareto.optimal, , drop = FALSE][,2]), col = "#F194B4", size = 2, alpha= .5, shape= 16) +
+  labs(
+    title = "",
+    x = expression(Y[1]),
+    y = expression(Y[2])
+  ) + 
+  theme_bw() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  annotate("text", x = .3, y = .25, label = paste("Gen = ", results_simu$gen[2]), 
+           hjust = -0.1, vjust = 1.1, size = 4)
+
+LSSC_plot <- ggplot() + 
+  geom_line(data = pareto_test, aes(x=Y1,Y2),size=1) +
+  geom_point(aes(x=-front_LSSC$value[front_LSSC$pareto.optimal,, drop = FALSE][,1], 
+                 y=-front_LSSC$value[front_LSSC$pareto.optimal, , drop = FALSE][,2]), col = "darkcyan", size = 2, alpha= .5, shape= 16) +
+  labs(
+    title = "",
+    x = expression(Y[1]),
+    y = expression(Y[2])
+  ) + 
+  theme_bw() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  annotate("text",x = .3, y = .25, label = paste("Gen = ", results_simu$gen[4]), 
+           hjust = -0.1, vjust = 1.1, size = 4)
+
+entropy_plot <- ggplot() + 
+  geom_line(data = pareto_test, aes(x=Y1,Y2),size=1) +
+  geom_point(aes(x=-front_entropy$value[front_entropy$pareto.optimal, , drop = FALSE][,1], 
+                 y=-front_entropy$value[front_entropy$pareto.optimal, , drop = FALSE][,2]), col = "goldenrod2", size = 2, alpha= .5, shape= 16) +
+  labs(
+    title = "",
+    x = expression(Y[1]),
+    y = expression(Y[2])
+  ) + 
+  theme_bw() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  annotate("text", x = .3, y = .25, label = paste("Gen = ", results_simu$gen[5]), 
+           hjust = -0.1, vjust = 1.1, size = 4)
+
+ocd_plot <- ggplot() + 
+  geom_line(data = pareto_test, aes(x=Y1,Y2),size=1) +
+  geom_point(aes(x=-front_ocd$value[front_ocd$pareto.optimal,, drop = FALSE][,1], 
+                 y=-front_ocd$value[front_ocd$pareto.optimal, , drop = FALSE][,2]), col = "darkorchid", size = 2, alpha= .5, shape= 16) +  
+  labs(
+    title = "",
+    x = expression(Y[1]),
+    y = expression(Y[2])
+  ) + 
+  theme_bw() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  annotate("text", x = .3, y = .25, label = paste("Gen = ", results_simu$gen[3]), 
+           hjust = -0.1, vjust = 1.1, size = 4)
+
+ggarrange(ocd_plot, LSSC_plot, MGBM_plot, entropy_plot, MPF_plot,
+                    labels = c("OCD_HV", "LSSC", "MGBM", "Entropy", "MPF"),
+                    ncol = 3, nrow = 2, hjust = c(-.8,-1.1,-.9,-.8,-1.5))
+```
 
 As expected, OCD HV stops before the other criteria, resulting in lower computational cost and potentially reduced performance in terms of hypervolume values. The Pareto front obtained under OCD HV is satisfactory, although some areas of the front remain unexplored (@fig-3). On the other hand, Entropy stops much later, leading to higher-quality fronts at the expense of increased computational cost. The Entropy criterion produces results similar to those of the MGBM and MPF, but requires more generations to do so. This suggests that Entropy could potentially terminate earlier while still achieving comparable Pareto front quality. The LSSC criterion obtains similar results to OCD HV with some unexplored regions. For this simple problem, characterized by a small number of objectives and variables, all the stopping criteria identify a Pareto front close to the simulated front, with no significant differences in their ability to reach the theoretical front.
 
@@ -170,9 +1197,53 @@ As expected, OCD HV stops before the other criteria, resulting in lower computat
 
 This section focuses on analysing benchmark problems with two objectives. The four problems presented here represent a range of difficulty levels and exhibit diverse Pareto front shapes. @fig-4 presents the results in terms of the number of generations when the iteration is stop by the stopping criteria, the corresponding hypervolume and spread, as well as two measures of computational time (criterion time and overall time). Detailed numerical results are provided in the appendix (@tbl-table2).
 
-![Optimization results for problems benchmark with k = 2. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed).](figures/Figure4.png){#fig-4}
+```{r ,fig.height=13, fig.width=20, echo=FALSE}
+#| label: fig-4
+#| message: false
+#| warning: false
+#| fig-cap: "Optimization results for problems benchmark with k = 2. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed)."
+results_tot <- read_rds("data/benchmark/results_benchmark_problems.rds")
 
-The stopping criteria behave consistently across the four two-objective problems and the overall trends agree with previous findings in the literature. The OCD HV criterion, designed to minimize computational effort [@wagner_ocd_2009], stops earlier than the other methods. It therefore reaches lower hypervolume values but remains the fastest in terms of computation time. The LSSC criterion offers intermediate performance. It performs better than OCD HV for hypervolume and spread but remains less effective than the other criteria. The MGBM criterion reaches high hypervolume and low spread on all problems, although this comes with a substantial computational cost that appears in both the criterion time and the overall time. The Entropy criterion stands out as the most effective method. It achieves high hypervolume and low spread while maintaining a much lower computational cost, which makes it the most efficient option in this study. The MPF criterion provides a trade-off. It delivers satisfactory hypervolume and spread with low computation time, offering a reasonable balance between solution quality and efficiency.
+# Results for two-objective problems : Sect 4.2.1
+## Figure 4
+pb_2Y <-  results_tot %>% select(HV,critere,gen,time,time_tot,rep,Problem,Spread,nb_obj) %>% filter(nb_obj == 2) 
+
+pb_2Y$time <- log(pb_2Y$time)
+pb_2Y$time_tot <- log(pb_2Y$time_tot)
+pb_2Y <- pb_2Y %>%  filter(gen > 2)
+pb_2Y_long <- pb_2Y %>% select(HV,critere,gen,time,time_tot,rep,Problem,Spread) %>% pivot_longer(!c(rep,critere,Problem), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+pb_2Y_long %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(Problem~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+```
+
+The stopping criteria behave consistently across the four two-objective problems and the overall trends agree with previous findings in the literature. The OCD HV criterion, designed to minimize computational effort [@wagner_ocd_2009], stops earlier than the other criteria. It therefore reaches lower hypervolume values but remains the fastest in terms of computation time. The LSSC criterion offers intermediate performance. It performs better than OCD HV for hypervolume and spread but remains less effective than the other criteria. The MGBM criterion reaches high hypervolume and low spread on all problems, although this comes with a substantial computational cost that appears in both the criterion time and the overall time. The Entropy criterion stands out as the most effective method. It achieves high hypervolume and low spread while maintaining a much lower computational cost, which makes it the most efficient option in this study. The MPF criterion provides a trade-off. It delivers satisfactory hypervolume and spread with low computation time, offering a reasonable balance between solution quality and efficiency.
 
 @fig-5 illustrates the evolution of the hypervolume over generations for problems benchmark for one run of optimization and the generation at which the stopping criteria stop the iteration. The stopping criteria identify the generation at which the Pareto front is considered stabilized, enabling the algorithm to terminate the iteration processus. To further illustrate the behavior of each stopping criterion, the obtained Pareto fronts are compared against the theoretical Pareto fronts of each benchmark problem in appendix (@fig-S1).
 
@@ -192,7 +1263,53 @@ In summary, for benchmark problems with two objectives, both OCD HV, LSSC and MG
 
 For WFG problems, it is possible to increase the number of objectives. To understand how the criteria respond to a higher number of objectives, we ran the WFG problems with four objectives. The results are shown in @fig-6 and detailed numerical results are provided in the appendix (@tbl-table3).
 
-![Optimization results for problems benchmark with k = 4. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed).](figures/Figure6.png){#fig-6}
+```{r ,fig.height=11, fig.width=20, echo=FALSE}
+#| label: fig-6
+#| message: false
+#| warning: false
+#| fig-cap: "Optimization results for problems benchmark with k = 4. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed)."
+results_tot <- read_rds("data/benchmark/results_benchmark_problems.rds")
+
+# Results for four-objective problems : Sect 4.2.2
+## Figure 6
+pb_4Y <-  results_tot %>% select(HV,critere,gen,time,time_tot,rep,Problem,Spread,nb_obj) %>% filter(nb_obj == 4)
+pb_4Y$time <- log(pb_4Y$time)
+pb_4Y$time_tot <- log(pb_4Y$time_tot)
+
+pb_4Y$Problem <- fct_relevel(pb_4Y$Problem, c("ZDT1", "WFG2", "WFG3","WFG4"))
+
+pb_4Y_long <- pb_4Y %>% select(HV,critere,gen,time,time_tot,rep,Problem,Spread) %>% pivot_longer(!c(rep,critere,Problem), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+pb_4Y_long %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(Problem~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+```
+
 
 The stopping criteria do not behave uniformly across the three WFG problems with four objectives. OCD HV fails to detect convergence on all three problems, reaching the maximum limit of 5,000 generations without identifying any stability in the Pareto front. A similar situation occurs with LSSC on WFG2 and WFG4, where no boxplot is visible, indicating that the criterion never triggered before the generation limit was reached. These two criteria therefore cannot be considered reliable stopping rules for these problems.
 
@@ -200,13 +1317,13 @@ MGBM produces hypervolume values comparable to the other criteria on WFG2, but i
 
 Entropy and MPF show comparable hypervolume performance across all three problems and exhibit similar criterion computation times per generation. Among the two, Entropy consistently yields slightly lower hypervolume values than MPF, while both maintain low and stable computational costs. A notable observation concerns MPF, where the stopping generation boxplot is wide while the hypervolume boxplot remains narrow. This can be explained by the fact that, for certain optimization runs, MPF detects stability only at a later stage, causing it to stop at substantially higher generations. Yet, despite this delayed detection, the resulting front quality is comparable to that obtained at lower generations, indicating that the additional generations executed in these runs do not translate into a hypervolume gain. This combination of variable stopping generation and stable solution quality nonetheless comes at the cost of higher computational overhead, since the criterion sometimes requires substantially more generations to trigger without a corresponding improvement in front quality.
 
-@fig-7 illustrates the evolution of the hypervolume across generations iteration and the generation the iterations stop for each criterion on the WFG problems.
+@fig-7 illustrates the evolution of the hypervolume across generations and at which generation the iterations stop for each criterion on the WFG problems.
 
 ![Evolution of hypervolume over generations for problems benchmark for k = 4 with the stopping generation proposed by each stopping criterion.](figures/Figure7.png){#fig-7}
 
 Unlike the two-objective case, hypervolume evolution with four objectives becomes unstable and subject to fluctuations, which makes it more difficult for the stopping criteria to operate effectively. OCD HV and LSSC fail to detect stable convergence across all three problems, reaching the maximum limit of 5,000 generations and therefore are not represented in the figure.
 
-On WFG2, MGBM and Entropy stop at a similar generation, shortly after the hypervolume plateau is reached. However, MPF stops considerably later, around generation 550, well after the plateau has been established. Despite this later stopping point, MPF still achieves a good trade-off between solution quality and computational cost.
+On WFG2, MGBM and Entropy stop at a similar generation, shortly before the hypervolume plateau is reached. MPF stops considerably later, around generation 550, well after the plateau has been established. Despite this later stopping point, MPF still achieves a good trade-off between solution quality and computational cost (@fig-6).
 
 On WFG3, the three criteria stop at different points along the hypervolume curve. MGBM stops the earliest, before the plateau is fully reached, which may result in an incomplete front. Entropy stops closer to the plateau, while MPF stops the latest, once the plateau is clearly established. This ordering suggests that MPF applies a more conservative convergence detection strategy, which is beneficial for problems where the hypervolume stabilizes gradually.
 
@@ -218,17 +1335,60 @@ In summary, increasing the number of objectives from two to four strongly impact
 
 In order to assess the behavior of the criteria within a large number of objectives, problems WFG2, WFG3 and WFG4 were run with eight objectives. The results are shown in @fig-8 and detailed numerical results are provided in the appendix (@tbl-table4).
 
-![Optimization results for problems benchmark with k = 8. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed).](figures/Figure8.png){#fig-8}
+```{r ,fig.height=11, fig.width=20, echo=FALSE}
+#| label: fig-8
+#| message: false
+#| warning: false
+#| fig-cap: "Optimization results for problems benchmark with k = 8. For each criterion, 100 independent optimization runs were performed. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed)."
+results_tot <- read_rds("data/benchmark/results_benchmark_problems.rds")
+
+# Results for 8-objective problems : Sect 4.2.3
+## Figure 8
+pb_8Y <-  results_tot %>% select(HV,critere,gen,time,time_tot,rep,Problem,Spread,nb_obj) %>% filter(nb_obj == 8)
+pb_8Y$time <- log(pb_8Y$time)
+pb_8Y$time_tot <- log(pb_8Y$time_tot)
+
+pb_8Y_long <- pb_8Y %>% pivot_longer(!c(rep,critere,Problem,nb_obj), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+pb_8Y_long %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(Problem~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+```
 
 As shown in @fig-8, the behavior of the stopping criteria with eight objectives follows patterns consistent with those observed in the four-objective case, while amplifying some trends. OCD HV and LSSC fail to detect front stability across all three problems, confirming the lack of robustness of these two criteria as the number of objectives increases. This systematic failure suggests that both criteria are sensitive to the dimensionality of the objective space and cannot be considered reliable options for multi-objective optimization problems with a large number of objectives.
 
 For the remaining three criteria, performance varies depending on the problem structure. On WFG2, Entropy and MPF achieve comparable hypervolume and spread values. MGBM, on the other hand, yields slightly lower hypervolume values, with some runs producing particularly poor fronts, suggesting inconsistent convergence behavior.
 
-On WFG3, Entropy and MPF outperform MGBM in terms of hypervolume. MGBM again incurs a substantially higher computational cost compared to the other two criteria, reinforcing the observation that its overhead is significant regardless of the problem complexity. MPF and Entropy produce similar results on this problem in terms of hypervolume and spread. However, MPF exhibits a considerably wider spread in its stopping generation, as reflected by the extent of its boxplot. This variability confirms the pattern already observed for four-objective problems, where MPF occasionally detects stabilization later than necessary, incurring unnecessary computational cost.
+On WFG3, Entropy and MPF outperform MGBM in terms of hypervolume. MGBM again incurs a high computational cost, reinforcing the observation that its overhead is significant regardless of the problem complexity. MPF and Entropy produce similar results on this problem in terms of hypervolume and spread. However, MPF exhibits a considerably wider variability in its stopping generation, as reflected by the extent of its boxplot. This variability confirms the pattern already observed for four-objective problems, where MPF occasionally detects stabilization later than necessary, incurring unnecessary computational cost.
 
 On WFG4, MGBM stops prematurely, yielding a significantly lower hypervolume than Entropy and MPF, which confirms its inability to handle highly multimodal problems regardless of the number of objectives. Entropy and MPF achieve similar hypervolume values but MPF requires a considerably higher number of generations before stopping. As observed in the four-objective case, this behavior can be attributed to the persistent hypervolume fluctuations characteristic of WFG4, which require MPF to wait until a stabilization emerges before stopping. While this leads to good quality fronts, it results in a substantially higher overall computation time for MPF compared to Entropy on this problem. 
 
-Across all problems, it is worth noting that the computational cost of hypervolume-based criteria (OCD HV, LSSC and MPF) is substantially higher than that of the Entropy criterion. The hypervolume indicator is well known for its exponentially increasing computational complexity as the number of objectives grows. This difference was not apparent for two or four objectives but becomes clearly observable at eight objectives, highlighting a scalability limitation of hypervolume-based stopping criteria in higher-dimensional settings.
+Across all problems, it is worth noting that the computational cost of hypervolume-based criteria (OCD HV, LSSC and MPF) is substantially higher than that of the Entropy criterion. The hypervolume indicator is well known for its exponentially increasing computational complexity as the number of objectives grows [@liefooghe_correlation_2016]. This difference was not apparent for two or four objectives but becomes clearly observable at eight objectives, highlighting a scalability limitation of hypervolume-based stopping criteria in higher-dimensional settings.
 
 ![Evolution of hypervolume over generations for problems benchmark for k = 8 with the stopping generation proposed by each stopping criterion.](figures/Figure9.png){#fig-9}
 
@@ -246,7 +1406,51 @@ In summary, the eight-objective results confirm and strengthen the conclusions d
 
 The stopping criteria were applied to the multi-objective optimization of a cheese production process. The problem was composed of four objectives and 79 variables and constraints linked to the process. Unlike the previous problems, this one has constraints that need to be integrated into the optimization. @fig-10 shows the performances of each criterion after optimization. Detailed numerical results are provided in the appendix (@tbl-table5).
 
-![Stopping criteria for an industrial optimization with k = 4. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed).](figures/Figure10.png){#fig-10}
+```{r ,fig.height=4.5, fig.width=20, echo=FALSE}
+#| label: fig-10
+#| message: false
+#| warning: false
+#| fig-cap: "Stopping criteria for an industrial optimization with k = 4. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed)."
+
+# Evaluation of the stopping criteria on a cheese-making process optimization problem : Sect 4.3
+results_real_case <- read_rds("data/industrial_case/results_industrial_case.rds")
+
+results_real_case_log <- results_real_case
+## Figure 10
+results_real_case_log$time <- log(results_real_case_log$time)
+results_real_case_log$time_tot <- log(results_real_case_log$time_tot)
+results_real_case_log$critere <- fct_relevel(results_real_case_log$critere, c("OCD_HV", "LSSC", "MGBM","Entropy","MPF"))
+results_real_case_long <- results_real_case_log %>% select(HV,critere,gen,time,time_tot,rep,Spread) %>% pivot_longer(!c(rep,critere), names_to = "Variables", values_to = "Valeurs")
+
+supp.labs <- c("Stopping Generation", "Hypervolume", "Spread" ,"Criterion Time", "Overall Time")
+names(supp.labs) <- c("gen", "HV", "Spread", "time","time_tot")
+
+results_real_case_long %>% 
+  ggplot(aes(x = critere, y = Valeurs,fill=Variables)) + 
+  geom_boxplot( alpha = 0.3) + 
+  facet_grid2(~Variables,scale="free",independent="all", labeller = labeller(Variables = supp.labs)) +  
+  labs(
+    title = "",
+    x = "Stopping criterion",
+    y = "Values"
+  ) + 
+  theme_bw() + 
+  scale_fill_brewer(palette = "Dark2") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text.x = element_text(size = 13, face = "bold"),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) 
+```
 
 MGBM is the first to stop, after only one generation. This premature termination logically results in a low hypervolume and high spread, which are typical of a front still in the exploratory phase. In comparison, LSSC and Entropy yield similar results, with Entropy requiring slightly more computation time. The OCD HV and MPF criteria obtain similar results in terms of Pareto front quality, with only a slight difference in computational time. However, both criteria show a high standard deviation, suggesting variability across runs and potential instability. MPF achieves good results despite this variability, making it a reasonable alternative to OCD HV with comparable performance.
 
@@ -256,13 +1460,13 @@ To deepen the analysis, the evolution of the hypervolume over generations is ill
 
 This curved evolution underlines an irregular hypervolume progression, characterized by plateaus, jumps and slight fluctuations. Such a trajectory is reminiscent of that observed in certain problems from the WFG family, which are known for their complexity. Several factors may explain this behavior: the presence of local optima, discontinuities in the Pareto front or correlations between objectives. Altogether, these elements suggest that the industrial problem under consideration is complex and difficult to optimize. In this context, MGBM stops too early, well before the Pareto front reaches a satisfactory quality. LSSC and Entropy also stop while the hypervolume is still increasing, indicating that they fail to reach an optimal front. OCD HV and MPF criteria demonstrate similar behavior, both stopping when the hypervolume starts stabilizing, indicating good Pareto front quality. Both criteria appear to effectively capture the convergence of the optimization process by terminating when the hypervolume becomes nearly stationary, reflecting a stabilization of the Pareto front.
 
-In conclusion, in a real industrial context, most criteria face challenges similar to those observed in certain WFG problems, due to the complexity of the Pareto front. Among all the evaluated criteria, OCD HV and MPF stand out, as they are the only ones to propose stopping points that align with the stabilization of the hypervolume, making them reliable choices in real complex scenarios. Furthermore, despite their robustness, they maintain reasonable computational costs, which makes them particularly suitable for industrial applications where a balance between performance and efficiency is required.
+In conclusion, in a real industrial context, most criteria face challenges similar to those observed in certain WFG problems, due to the complexity of the Pareto front. Among all the evaluated criteria, OCD HV and MPF stand out, as they are the only ones to propose stopping points that align with the stabilization of the hypervolume, making them reliable choices in real complex problems. Furthermore, despite their robustness, they maintain reasonable computational costs, which makes them particularly suitable for industrial applications where a balance between performance and efficiency is required.
 
 # Discussion and future work
 
 ## Comparison of different criteria
 
-A good stopping criteria implemented to multi-objective optimization problem algorithm should manage trading off between computational cost, robustness to problem complexity and the ability to detect algorithm convergence. MPF emerges as the most robust criterion across the problems evaluated, successfully combining high-quality Pareto fronts, computation times compatible with industrial constraints and resilience to varying levels of problem complexity. It is the only criterion capable of reliably detecting convergence in complex and realistic optimization settings, making it well-suited for industrial applications. However, as the number of objectives increases, MPF consistently identifies stabilization but requires a higher number of generations to do so, resulting in increased computational cost. In contrast, OCD HV and LSSC criteria, while having low computational cost for problems with few objectives and being simple to implement, see their effectiveness decreasing as the problem becomes more complex, particularly when the number of objectives increases or when the Pareto front has specific challenging features. In such cases, they fail to detect front stability accurately. MGBM can identify good quality Pareto fronts on problems of moderate complexity, but it is prone to premature stopping on the most challenging problems, such as WFG4 regardless of the number of objectives, leading to incomplete and suboptimal fronts. Furthermore, its computational cost is higher than all other criteria across all tested configurations, which limits its suitability in industrial contexts where rapid decision-making is required. Entropy, on the other hand, achieves very good results regardless of the problem complexity, while remaining computationally inexpensive. However, since it relies on a single metric, it may struggle in situations where both convergence and diversity analysis are necessary to fully assess the quality of the front. This limitation is highlighted in the real-world application case, where Entropy fails to capture the full diversity and convergence of the Pareto front.
+A good stopping criteria implemented to multi-objective optimization problem algorithm should manage trading off between computational cost, robustness to problem complexity and the ability to detect algorithm convergence. MPF emerges as the most robust criterion across the problems evaluated, successfully combining high-quality Pareto fronts, computation times compatible with industrial constraints and resilience to varying levels of problem complexity. It is the only criterion capable of reliably detecting convergence in complex and realistic optimization settings, making it well-suited for industrial applications. However, as the number of objectives increases, MPF consistently identifies stabilization but requires a higher number of generations to do so, resulting in increased computational cost. In contrast, OCD HV and LSSC criteria, while having low computational cost for problems with few objectives and being simple to implement, see their effectiveness decreasing as the problem becomes more complex, particularly when the number of objectives increases or when the Pareto front has specific challenging features. In such cases, they fail to detect front stability accurately. MGBM can identify good quality Pareto fronts on problems of moderate complexity, but it is prone to premature stopping on the most challenging problems, such as WFG4 regardless of the number of objectives, leading to incomplete and suboptimal fronts. Furthermore, its computational cost is higher than other criteria across problems, which limits its suitability in industrial contexts where rapid decision-making is required. Entropy, on the other hand, achieves very good results regardless of the problem complexity, while remaining computationally inexpensive. However, since it relies on a single metric, it may struggle in situations where both convergence and diversity analysis are necessary to fully assess the quality of the front. This limitation is highlighted in the industrial case, where Entropy fails to capture the full diversity and convergence of the Pareto front.
 
 ## Sensitivity of criteria to configuration parameters
 
@@ -270,9 +1474,7 @@ In this study, five stopping criteria were compared, each designed with its own 
 
 Regarding MGBM, a fixed threshold of 0.05 was used [@abu_doush_effect_2023]. This threshold is intended to detect convergence when the MDR value approaches zero, indicating absence of significant improvements. However, our results show that MDR values vary significantly depending on the number of objectives for WFG4. The behaviour of the MDR value differs substantially between two, four and eight-objective problems. For two-objective problems, the 0.05 threshold is reached only after a huge number of generations, reflecting a true stabilization in the evolutionary process and indicating real convergence. In contrast, for four and eight-objective problems, the same threshold is reached almost immediately, often within the first few generations and therefore does not reflect real convergence or plateau. Conversely, a stricter threshold (such as 0.0001 [@marti_stopping_2016]) is never reached in our experiments, preventing the detection of any stopping point. These observations highlight the limitations of using a static threshold for all problems. It may lead either to premature termination or to no termination at all. A more adaptive approach, based on the progression of MDR over generations rather than its value at one generation, would likely be more effective and better suited to specific problem characteristics.
 
-The MPF criterion appears to be the most relevant across varying levels of problem complexity. For problems with two and four objectives, it offers a good compromise between Pareto front quality and computational cost. However, as the number of objectives increases, the hypervolume computation becomes increasingly expensive, which limits the practical appeal of MPF in higher-dimensional settings. 
-
-Many-objective optimization, typically defined as problems involving more than ten objectives, represents a challenging setting for stopping criteria. In our experiments, extending the evaluation to ten objectives revealed that hypervolume computation times become expensive, making it impractical to use as a basis for a stopping criterion in this context. This is a well-documented limitation in the literature, as the computational complexity of the hypervolume grows exponentially with the number of objectives [@guerreiro_hypervolume_2022]. It should be noted, however, that real-world engineering problems rarely involve ten objectives or even more and the two to four-objective case remains the most common in practice. Nevertheless, as optimization problems grow in complexity, the need for stopping criteria that remain computationally efficient in higher-dimensional spaces becomes increasingly relevant.
+The MPF criterion appears to be the most relevant across varying levels of problem complexity. For problems with two and four objectives, it offers a good compromise between Pareto front quality and computational cost. However, as the number of objectives increases, the hypervolume computation becomes increasingly expensive, which limits the practical appeal of MPF in higher-dimensional settings. Many-objective optimization, typically defined as problems involving more than ten objectives, represents a challenging setting for stopping criteria. In our experiments, extending the evaluation to ten objectives revealed that hypervolume computation times become expensive, making it impractical to use as a basis for a stopping criterion in this context. This is a well-documented limitation in the literature, as the computational complexity of the hypervolume grows exponentially with the number of objectives [@guerreiro_hypervolume_2022]. It should be noted, however, that real-world industrial problems rarely involve ten objectives or even more and the two to four-objective case remains the most common in practice. Nevertheless, as optimization problems grow in complexity, the need for stopping criteria that remain computationally efficient in higher-dimensional spaces becomes increasingly relevant.
 
 An important advantage of MPF in this regard is its modularity, as the hypervolume metric can be replaced by any other convergence metric. In many-objective optimization, computationally lower alternatives such as R2 or IGD could be substituted without altering the structure of the criterion [@audet_performance_2021; @liefooghe_correlation_2016]. This flexibility makes MPF particularly attractive for scaling to high-dimensional objective optimization problems, where computational efficiency becomes critical. The modular nature of MPF thus ensures its applicability across a wide range of problem complexities without being constrained by the computational time.
 
@@ -280,11 +1482,59 @@ An important advantage of MPF in this regard is its modularity, as the hypervolu
 
 While the performance of the evaluated criteria was tested under increasing levels of problem complexity (such as objective correlation and multimodality), we did not explicitly consider another important form of complexity: a strong discontinuous nature of the Pareto front with convex and concave shapes, as exemplified by WFG1. This problem introduces a different challenge where the search process does not progress smoothly but rather by in steps or segments. WFG1 is characterized by a partially separable structure, transformation functions that create strong nonlinearities and a discontinuous Pareto front. As a result, optimization algorithms often discover the front piece by piece, trying to uncover disconnected regions. WFG2 also exhibits a discontinuous Pareto front but in a less complex form. While still posing difficulties, the segmentation in WFG2 is simpler and easier to overcome for the stopping criteria compared to WFG1’s multi-fragmented structure. The tested criteria are not well-suited to capture this type of complexity as shown in @fig-12. 
 
-![Evolution of hypervolume over generations for WFG1 problem for k = 2 with the stopping generation proposed by each stopping criterion.](figures/Figure12.png){#fig-12}
+```{r, fig.height=6, fig.width=8, echo=FALSE}
+#| label: fig-12
+#| message: false
+#| warning: false
+#| results: hide
+#| fig-cap: "Evolution of hypervolume over generations for WFG1 problem for k = 2 with the stopping generation proposed by each stopping criterion."
 
-The evolution of the hypervolume is discontinuous and the criteria stop at intermediate pillars, resulting in a non-complete exploration of the front. All criteria inherently assume a continuous and gradual improvement of the Pareto front, reflected in the smooth evolution of evaluation metrics like hypervolume. When this assumption does not hold, as in WFG1, these criteria may fail to detect meaningful progress or stability. This highlights an opportunity for improvement in scenarios where the front evolves with strong discontinuities. Future work presents opportunities to enhance these criteria by developing innovative mechanisms for managing front fragmentation, which will strengthen their effectiveness in complex problem scenarios.
+set.seed(123)
+wfg1_2Y <- makeWFG1Function(2,6,14)
 
-More broadly, the benchmark selection in this study was guided by two main considerations: the need to cover a range of Pareto front type (convex, concave, disconnected) and the ability to scale across different numbers of objectives. The WFG suite was preferred over a full ZDT evaluation because it satisfies both requirements simultaneously, whereas ZDT problems are restricted to two objectives and their front types are largely represented within the WFG suite. Nevertheless, extending the evaluation to a broader set of benchmark problems, including the remaining ZDT and WFG instances, remains an avenue for future work to further validate the general applicability of the conclusions drawn in this article.
+set.seed(123)
+optim_wfg1 <- mco::nsga2(wfg1_2Y, 20,2, generations = c(1:1000), popsize = 100,
+                         lower.bounds = rep(0, 20), upper.bounds = 2*seq_len(20))
+
+pareto_fronts_wfg1 <- extract_pareto_front(optim_wfg1)
+
+hv_values_wfg1 <- sapply(pareto_fronts_wfg1, function(pareto_fronts_wfg1) dominatedHypervolume(pareto_fronts_wfg1, rep(10,2)))
+
+set.seed(123)
+wfg1_plot_2Y <- optim_rep(wfg1_2Y,20,2,0,2*seq_len(20),1,10,5000)
+
+ggplot() + geom_point(aes(x=c(1:1000),y=hv_values_wfg1[1:1000])) +
+  theme_bw() + labs(title = "WFG1, k = 2", x = "Generations", y="Hypervolume" )   +
+  theme(
+    plot.title = element_text( face = "bold", size = 16),  
+    plot.subtitle = element_text(hjust = 0.5, size = 12),  
+    axis.title = element_text(size = 15),  
+    axis.text = element_text(size = 13),  
+    legend.title = element_blank(),
+    legend.text = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size = 15, face = "bold"),
+    strip.background = element_rect(
+      color="black", fill="white"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[3], xend = wfg1_plot_2Y$gen[3], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "darkorchid", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[4], xend = wfg1_plot_2Y$gen[4], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "darkcyan", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[2], xend = wfg1_plot_2Y$gen[2], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "#F194B4", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[5], xend = wfg1_plot_2Y$gen[5], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "goldenrod2", size=1.5, alpha=0.6) + 
+  annotate("segment", x = wfg1_plot_2Y$gen[1], xend = wfg1_plot_2Y$gen[1], y = min(hv_values_wfg1)+1.6, yend = max(hv_values_wfg1), colour = "firebrick", size=1.5, alpha=0.6) +
+  annotate("text", x = wfg1_plot_2Y$gen[3], y = min(hv_values_wfg1) +0.4, label = "OCD HV", size = 4, angle = 90, vjust = 0) +
+  annotate("text", x = wfg1_plot_2Y$gen[4], y = min(hv_values_wfg1)+0.4 , label = "LSSC", size = 4, angle = 90, vjust = 0.5) +
+  annotate("text", x = wfg1_plot_2Y$gen[2], y = min(hv_values_wfg1)+0.4 , label = "MGBM", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg1_plot_2Y$gen[5], y = min(hv_values_wfg1) +0.4, label = "Entropy", size = 4, angle = 90, vjust = 0.3) +
+  annotate("text", x = wfg1_plot_2Y$gen[1], y = min(hv_values_wfg1) +0.4, label = "MPF", size = 4, angle = 90, vjust = 0.3)
+
+```
+
+The evolution of the hypervolume is discontinuous and the criteria stop at intermediate pillars, resulting in a non-complete exploration of the front. All criteria inherently assume a continuous and gradual improvement of the Pareto front, reflected in the smooth evolution of evaluation metrics like hypervolume. When this assumption does not hold, as in WFG1, these criteria may fail to detect meaningful progress or stability. This highlights an opportunity for improvement in problems where the front evolves with strong discontinuities. Future work presents opportunities to enhance these criteria by developing innovative mechanisms for managing front fragmentation, which will strengthen their effectiveness in complex problem scenarios.
+
+More broadly, the benchmark selection in this study was guided by two main considerations: the need to cover a range of Pareto front type (e.g. convex, concave and disconnected) and the ability to scale across different numbers of objectives. The WFG suite was preferred over a full ZDT evaluation because it satisfies both requirements simultaneously, whereas ZDT problems are restricted to two objectives and their front types are largely represented within the WFG suite. Nevertheless, extending the evaluation to a broader set of benchmark problems, including the remaining ZDT and WFG instances, remains an avenue for future work to further validate the general applicability of the conclusions drawn in this article.
 
 # Appendix
 ```{r, echo=F, message=F, include=F}
@@ -293,7 +1543,7 @@ library(kableExtra)
 library(dplyr)
 ```
 
-**Algorithm 1:** Stopping criterion using sliding windows on hypervolume and entropy
+**Algorithm 1:** MPF, a stopping criterion using sliding windows on hypervolume and entropy
 
 **Input:** $L$: window length, $\varepsilon_H$: convergence threshold, $\varepsilon_S$: number of decimal places
 
@@ -330,9 +1580,25 @@ library(dplyr)
 
 ```{r, echo=F, message=F, warning=F}
 #| label: tbl-table1
-#| tbl-cap: Means and standard deviations of evaluation metrics for each criterion when k = 2 and X = 2.
+#| tbl-cap: Means and standard deviations of evaluation metrics for each criterion when k = 2 and X = 2 (Section 4.1).
 knitr::kable(
-  readRDS("tables/table_simu.rds"),
+  results_simu %>%
+  group_by(critere) %>%
+  summarise(
+    "Mean HV" = mean(HV, na.rm = TRUE),
+    "Std HV" = sd(HV, na.rm = TRUE),
+    "Mean Spread" = mean(Spread, na.rm = TRUE),
+    "Std Spread" = sd(Spread, na.rm = TRUE),
+    "Mean Gen" = mean(gen, na.rm = TRUE),
+    "Std Gen" = sd(gen, na.rm = TRUE),
+    "Mean Time" = mean(time_tot, na.rm = TRUE),
+    "Std Time" = sd(time_tot, na.rm = TRUE),
+    "Mean Criterion Time" = mean(time, na.rm = TRUE),
+    "Std Criterion Time" = sd(time, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
+  mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`,`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))),
   align="c",
   booktabs = TRUE,
   col.names = c("Criterion", "Mean", "Std", "Mean", "Std", "Mean", "Std",
@@ -350,9 +1616,26 @@ knitr::kable(
 
 ```{r, echo=F, message=F, warning=F}
 #| label: tbl-table2
-#| tbl-cap: Means and standard deviations of evaluation metrics for each benchmark problem and criterion when k = 2.
+#| tbl-cap: Means and standard deviations of evaluation metrics for each benchmark problem and criterion when k = 2 (Section 4.2.1).
 knitr::kable(
-  readRDS("tables/table_2Y.rds"),
+  results_tot %>%
+  filter(nb_obj == 2) %>%
+  group_by(Problem, critere) %>%
+  summarise(
+    "Mean HV" = mean(HV, na.rm = TRUE),
+    "Std HV" = sd(HV, na.rm = TRUE),
+    "Mean Spread" = mean(Spread, na.rm = TRUE),
+    "Std Spread" = sd(Spread, na.rm = TRUE),
+    "Mean Gen" = mean(gen, na.rm = TRUE),
+    "Std Gen" = sd(gen, na.rm = TRUE),
+    "Mean Time" = mean(time_tot, na.rm = TRUE),
+    "Std Time" = sd(time_tot, na.rm = TRUE),
+    "Mean Criterion Time" = mean(time, na.rm = TRUE),
+    "Std Criterion Time" = sd(time, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
+  mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`,`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) ,
   align="c",
   booktabs = TRUE,
   col.names = c("Problem","Criterion", "Mean", "Std", "Mean", "Std", "Mean", "Std",
@@ -374,9 +1657,27 @@ knitr::kable(
 
 ```{r, echo=F, message=F, warning=F}
 #| label: tbl-table3
-#| tbl-cap: Means and standard deviations of evaluation metrics for each benchmark problem and criterion when k = 4. NA values indicate that the criterion reached the maximum number of generations (5000) without achieving front stability.
+#| tbl-cap: Means and standard deviations of evaluation metrics for each benchmark problem and criterion when k = 4 (Section 4.2.2). NA values indicate that the criterion reached the maximum number of generations (5000) without achieving front stability.
 knitr::kable(
-  readRDS("tables/table_4Y.rds"),
+ results_tot %>%
+  filter(nb_obj == 4) %>%
+  group_by(Problem, critere) %>%
+  summarise(
+    "Mean HV" = mean(HV, na.rm = TRUE),
+    "Std HV" = sd(HV, na.rm = TRUE),
+    "Mean Spread" = mean(Spread, na.rm = TRUE),
+    "Std Spread" = sd(Spread, na.rm = TRUE),
+    "Mean Gen" = mean(gen, na.rm = TRUE),
+    "Std Gen" = sd(gen, na.rm = TRUE),
+    "Mean Time" = mean(time_tot, na.rm = TRUE),
+    "Std Time" = sd(time_tot, na.rm = TRUE),
+    "Mean Criterion Time" = mean(time, na.rm = TRUE),
+    "Std Criterion Time" = sd(time, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
+  mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`), ~ round(., 2))) %>% 
+  mutate(across(c(`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) ,
   booktabs = TRUE,
   align="c",
   col.names = c("Problem","Criterion", "Mean", "Std", "Mean", "Std", "Mean", "Std",
@@ -398,9 +1699,27 @@ knitr::kable(
 
 ```{r, echo=F, message=F, warning=F}
 #| label: tbl-table4
-#| tbl-cap: Means and standard deviations of evaluation metrics for each benchmark problem and criterion when k = 8. NA values indicate that the criterion reached the maximum number of generations (5000) without achieving front stability.
+#| tbl-cap: Means and standard deviations of evaluation metrics for each benchmark problem and criterion when k = 8 (Section 4.2.3). NA values indicate that the criterion reached the maximum number of generations (5000) without achieving front stability.
 knitr::kable(
-  readRDS("tables/table_8Y.rds"),
+  results_tot %>%
+  filter(nb_obj == 8) %>%
+  group_by(Problem, critere) %>%
+  summarise(
+    "Mean HV" = mean(HV, na.rm = TRUE),
+    "Std HV" = sd(HV, na.rm = TRUE),
+    "Mean Spread" = mean(Spread, na.rm = TRUE),
+    "Std Spread" = sd(Spread, na.rm = TRUE),
+    "Mean Gen" = mean(gen, na.rm = TRUE),
+    "Std Gen" = sd(gen, na.rm = TRUE),
+    "Mean Time" = mean(time_tot, na.rm = TRUE),
+    "Std Time" = sd(time_tot, na.rm = TRUE),
+    "Mean Criterion Time" = mean(time, na.rm = TRUE),
+    "Std Criterion Time" = sd(time, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c( `Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
+  mutate(across(c(`Mean HV`, `Std HV`,`Mean Spread`, `Std Spread`,`Mean Time`, `Std Time`), ~ round(., 2))) %>% 
+  mutate(across(c(`Mean Criterion Time`, `Std Criterion Time`), ~ round(., 3))) ,
   booktabs = TRUE,
   align="c",
   col.names = c("Problem","Criterion", "Mean", "Std", "Mean", "Std", "Mean", "Std",
@@ -421,14 +1740,32 @@ knitr::kable(
 ```
 
 ```{r, echo=FALSE, message=F, warning=F}
-table_indus <- readRDS("tables/table_industrial_case.rds")
+table_indus <- results_real_case %>%
+  group_by(critere) %>%
+  summarise(
+    "Mean HV" = mean(HV, na.rm = TRUE),
+    "Std HV" = sd(HV, na.rm = TRUE),
+    "Mean Spread" = mean(Spread, na.rm = TRUE),
+    "Std Spread" = sd(Spread, na.rm = TRUE),
+    "Mean Gen" = mean(gen, na.rm = TRUE),
+    "Std Gen" = sd(gen, na.rm = TRUE),
+    "Mean Time" = mean(time_tot, na.rm = TRUE),
+    "Std Time" = sd(time_tot, na.rm = TRUE),
+    "Mean Criterion Time" = mean(time, na.rm = TRUE),
+    "Std Criterion Time" = sd(time, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c(`Mean Gen`, `Std Gen`), ~ round(., 0))) %>%
+  mutate(across(c(`Mean HV`, `Std HV`, `Mean Spread`, `Std Spread`, 
+                  `Mean Time`, `Std Time`, `Mean Criterion Time`, `Std Criterion Time`), 
+                ~ round(., 3)))
 table_indus <- table_indus %>%
   slice(c(5, 2, 3, 1,4))
 ```
 
 ```{r, echo=FALSE, message=F, warning=F}
 #| label: tbl-table5
-#| tbl-cap: Means and standard deviations of evaluation metrics for each criterion for industrial case for k = 4.
+#| tbl-cap: Means and standard deviations of evaluation metrics for each criterion for industrial case for k = 4 (Section 4.3).
 knitr::kable(table_indus,
   align="c",
   booktabs = TRUE,
@@ -449,7 +1786,7 @@ knitr::kable(table_indus,
 This project was supported by Fondation Institut Agro
 
 # Data availability
-The data presented in Section 4.1 were generated through simulations used to estimate the approximate Pareto front. For the benchmark problems in Section 4.2, no external data were used: the corresponding test functions are available in the ***mco*** package. For the industrial case study on cheese production, real data were used to train the Machine Learning models. As these data are confidential, only the trained models are made available. The script used to run the analyses is available in the "Script" folder. The results for the simulated Pareto front and the benchmark problems are fully reproducible. Only the industrial case study is not fully reproducible, due to the confidentiality of the data used to train the models.
+The data presented in Section 4.1 were generated through simulations used to estimate the approximate Pareto front. For the benchmark problems in Section 4.2, no external data were used: the corresponding test functions are available in the ***mco*** package. For the industrial case study on cheese production, real data were used to train the Machine Learning models. As these data are confidential, only the trained models are made available. The script used to run the analyses is available in the "Script" folder. The large files associated with the industrial case study are not included directly in the repository due to their size. They are archived separately on Zenodo (https://doi.org/10.5281/zenodo.22086876) and can be retrieved via the provided download script. The results for the simulated Pareto front and the benchmark problems are fully reproducible. Only the industrial case study is not fully reproducible, due to the confidentiality of the data used to train the models.
 
 # Authorship contribution statement
 **Manon Perrignon:** Writing – original draft, Conceptualization, Methodology, Investigation, Simulation, Visualization.

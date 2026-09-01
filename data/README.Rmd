@@ -1,0 +1,12 @@
+# Industrial case data
+
+The large `.rds` files used for the industrial case study are not stored
+in this repository due to their size. They are archived on Zenodo:
+
+> [Manon Perrignon, Magalie Houée-Bigot, Romain Jeantet, Thomas Croguennec, Mathieu Emily] (2026). [Data for: Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application - Industrial case study results]. Zenodo. https://doi.org/10.5281/zenodo.22086876
+
+To download them locally, run:
+
+```{r}
+source("data/download_data.R")
+```

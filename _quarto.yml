@@ -45,9 +45,13 @@ abstract: >+
 keywords: [Multi-objective optimization, Stopping criteria, Evolutionary algorithms, Evaluation metrics, Food process optimization]
 bibliography: references.bib
 github-user: computorg
-repo: "template-computo-r"
-draft: true # set to false once the build is running
-published: false # will be set to true once accepted
+repo: "Computo_MPerrignon"
+status: "submitted"
+citation:
+  type: article-journal
+  container-title: "Computo"
+  issn: "2824-7795"
+  doi: "10.5072/computo.0000" # placeholder DOI (10.5072 is the official DOI test prefix), replace once assigned
 license: CC-BY-4.0
 format:
   computo-html: default
