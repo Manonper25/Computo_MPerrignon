@@ -1412,6 +1412,22 @@ The stopping criteria were applied to the multi-objective optimization of a chee
 #| warning: false
 #| fig-cap: "Stopping criteria for an industrial optimization with k = 4. The figure reports the number of generations, the hypervolume (higher is better), the spread (lower is better) and two measures of computation time (log-transformed)."
 
+dest_dir <- "data/industrial_case"
+dest_file <- file.path(dest_dir, "results_industrial_case.rds")
+
+if (!file.exists(dest_file)) {
+  dir.create(dest_dir, showWarnings = FALSE, recursive = TRUE)
+  message("Downloading industrial case data from Zenodo...")
+  download.file(
+    "https://zenodo.org/record/22086876/files/results_industrial_case.rds",
+    destfile = dest_file,
+    mode = "wb"
+  )
+  if (!file.exists(dest_file) || file.info(dest_file)$size == 0) {
+    stop("Failed to download industrial case data from Zenodo.")
+  }
+}
+
 # Evaluation of the stopping criteria on a cheese-making process optimization problem : Sect 4.3
 results_real_case <- read_rds("data/industrial_case/results_industrial_case.rds")
 
