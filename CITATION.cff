@@ -1,0 +1,68 @@
+cff-version: 1.2.0
+message: If you use or cite this article, please use the metadata provided in 'preferred-citation'.
+title: 'Comparative analysis of stopping criteria for multi-objective evolutionary
+  algorithms: from benchmark problems to industrial application'
+authors:
+- family-names: Perrignon
+  given-names: Manon
+  orcid: https://orcid.org/0009-0007-8155-4919
+  affiliation: L'Institut Agro, INRAE, STLO (Science et Technologie du Lait et de
+    l'œuf), Rennes, France
+- family-names: Houée-Bigot
+  given-names: Magalie
+  orcid: https://orcid.org/0009-0004-5402-4726
+  affiliation: L'Institut Agro, Rennes, France
+- family-names: Jeantet
+  given-names: Romain
+  orcid: https://orcid.org/0000-0001-5405-5056
+  affiliation: L'Institut Agro, INRAE, STLO (Science et Technologie du Lait et de
+    l'œuf), Rennes, France
+- family-names: Croguennec
+  given-names: Thomas
+  orcid: https://orcid.org/0000-0003-4720-3641
+  affiliation: L'Institut Agro, INRAE, STLO (Science et Technologie du Lait et de
+    l'œuf), Rennes, France
+- family-names: Emily
+  given-names: Mathieu
+  orcid: https://orcid.org/0000-0001-9101-6689
+  affiliation: L'Institut Agro, Université de Rennes, CNRS, IRMAR (Institut de Recherche
+    Mathématique de Rennes)-UMR 6625, Rennes, France
+url: https://computo-journal.org/published-202609-perrignon-multi/
+preferred-citation:
+  type: article
+  title: 'Comparative analysis of stopping criteria for multi-objective evolutionary
+    algorithms: from benchmark problems to industrial application'
+  authors:
+  - family-names: Perrignon
+    given-names: Manon
+    orcid: https://orcid.org/0009-0007-8155-4919
+    affiliation: L'Institut Agro, INRAE, STLO (Science et Technologie du Lait et de
+      l'œuf), Rennes, France
+  - family-names: Houée-Bigot
+    given-names: Magalie
+    orcid: https://orcid.org/0009-0004-5402-4726
+    affiliation: L'Institut Agro, Rennes, France
+  - family-names: Jeantet
+    given-names: Romain
+    orcid: https://orcid.org/0000-0001-5405-5056
+    affiliation: L'Institut Agro, INRAE, STLO (Science et Technologie du Lait et de
+      l'œuf), Rennes, France
+  - family-names: Croguennec
+    given-names: Thomas
+    orcid: https://orcid.org/0000-0003-4720-3641
+    affiliation: L'Institut Agro, INRAE, STLO (Science et Technologie du Lait et de
+      l'œuf), Rennes, France
+  - family-names: Emily
+    given-names: Mathieu
+    orcid: https://orcid.org/0000-0001-9101-6689
+    affiliation: L'Institut Agro, Université de Rennes, CNRS, IRMAR (Institut de Recherche
+      Mathématique de Rennes)-UMR 6625, Rennes, France
+  journal: Computo
+  issn: 2824-7795
+  url: https://computo-journal.org/published-202609-perrignon-multi/
+  publisher:
+    name: Société Française de Statistique
+  doi: 10.5072/computo.0000
+  year: 2026
+doi: 10.5072/computo.0000
+date-released: '2026-09-01'
