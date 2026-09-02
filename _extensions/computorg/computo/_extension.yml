@@ -1,7 +1,9 @@
 title: Computo Format Template
 author: Computorg Team
-version: 0.2.9
+version: 1.0.4
 contributes:
+  shortcodes:
+    - shortcodes.lua
   formats:
     common:
       # define below YAML configuration common to all formats
@@ -12,9 +14,8 @@ contributes:
         - pseudocode
         - list-table
         - color-text.lua
-      shortcodes:
-        # You can include here Lua filters defining shortcodes from your extension
-        - shortcodes.lua
+        - status.lua
+        - canonical.lua
       knitr:
         opts_chunk:
           screenshot.opts:
@@ -46,6 +47,8 @@ contributes:
         - "partials/pdf/before-body.tex"
       format-resources:
         - logo_text_white.pdf
+      filters:
+        - pdf-table-fit.lua
     html:
       theme: [custom.scss]
       title-block-banner: "#034E79"
@@ -58,6 +61,9 @@ contributes:
       hover-citations: true
       hover-footnotes: true
       fig-format: svg
+      knitr:
+        opts_chunk:
+          dev: svglite
       highlight-style: github
       code-block-background: true
       code-tools:
@@ -75,7 +81,12 @@ contributes:
       eq-prefix: Equation
       fig-prefix: Figure
       tbl-prefix: Table
-      html-math-method: katex
+      html-math-method: mathjax
+      include-in-header:
+        - "partials/html/mathjax-ams.html"
       template-partials:
         - "partials/html/title-block.html"
         - "partials/html/title-metadata.html"
+        - "partials/html/status-alert.html"
+      filters:
+        - strip-legacy-plotly-mathjax.lua

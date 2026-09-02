@@ -44,8 +44,8 @@ main.tex
 DS_Store
 /.luarc.json
 
-#Download industrial data
-data/industrial_case/*.rds
-
 
 **/*.quarto_ipynb
+
+#Download industrial data
+data/industrial_case/*.rds
