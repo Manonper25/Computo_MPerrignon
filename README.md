@@ -1,11 +1,11 @@
 # Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application
 Manon Perrignon, Magalie Houée-Bigot, Romain Jeantet, Thomas
 Croguennec, Mathieu Emily
-2026-09-02
+2026-09-03
 
 ### Citation
 
-Manon Perrignon, Magalie Houée-Bigot, Romain Jeantet, Thomas Croguennec and Mathieu Emily (in press). Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application. Computo.
+Manon Perrignon, Magalie Houée-Bigot, Romain Jeantet, Thomas Croguennec and Mathieu Emily (September 2026). Comparative analysis of stopping criteria for multi-objective evolutionary algorithms: from benchmark problems to industrial application. Computo.
 <https://doi.org/10.57750/zq4m-sj18>
 
 ### Badges
