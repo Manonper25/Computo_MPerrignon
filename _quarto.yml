@@ -35,7 +35,7 @@ author:
     orcid: 0000-0001-9101-6689
     affiliations:
       - name: L'Institut Agro, Université de Rennes, CNRS, IRMAR (Institut de Recherche Mathématique de Rennes)-UMR 6625, Rennes, France
-date: last-modified
+date: 2026-09-03
 date-modified: last-modified
 abstract: >+
  Multi-objective optimization problems are commonly solved using evolutionary algorithms, which typically terminate after a user-defined number of generations without guaranteeing solution optimality. Stopping criteria can address this limitation by determining when the algorithm has converged to high-quality solutions. This study compares four existing stopping criteria and proposes a novel criterion designed to balance computational cost and solution quality. The criteria are first evaluated on classical multi-objective benchmark problems, then applied to test cases where optimal solutions are known and can be compared with those obtained after implementing each stopping criterion. Finally, the criteria are applied to a food process optimization case study. This analysis identifies the most effective criterion for achieving this trade-off in practical applications.
@@ -43,7 +43,7 @@ keywords: [Multi-objective optimization, Stopping criteria, Evolutionary algorit
 bibliography: references.bib
 github-user: computorg
 repo: "published-202609-perrignon-multi"
-status: "accepted"
+status: published
 google-scholar: true
 citation:
   type: article-journal
